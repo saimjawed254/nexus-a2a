@@ -10,9 +10,12 @@ import './landing.css';
 const AnimatedText = ({ text }: { text: string }) => {
   return (
     <>
-      {text.split('').map((char, i) => (
-        <span key={i} className={`char-span ${char.trim() ? 'anim-char' : ''}`} style={{ whiteSpace: 'pre' }}>
-          {char}
+      {text.split(' ').map((word, wIdx, arr) => (
+        <span key={wIdx} style={{ display: 'inline-block' }}>
+          {word.split('').map((char, cIdx) => (
+            <span key={cIdx} className={`char-span ${char.trim() ? 'anim-char' : ''}`}>{char}</span>
+          ))}
+          {wIdx !== arr.length - 1 && <span className="char-span" style={{ whiteSpace: 'pre' }}> </span>}
         </span>
       ))}
     </>
@@ -21,7 +24,10 @@ const AnimatedText = ({ text }: { text: string }) => {
 
 export default function Home() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  const { isSignedIn, user } = useUser();
+  const { isLoaded, isSignedIn, user } = useUser();
+  const adminEmail = process.env.NEXT_PUBLIC_ADMIN_EMAIL?.toLowerCase();
+  const userEmail = user?.primaryEmailAddress?.emailAddress?.toLowerCase();
+  const isAdmin = !!(userEmail && adminEmail && userEmail === adminEmail);
   const [timeStr, setTimeStr] = useState('');
 
   const emailText = user?.primaryEmailAddress?.emailAddress;
@@ -97,7 +103,13 @@ export default function Home() {
                               <span className="link-text">Customer Shop</span>
                           </span>
                       </Link>
-                      <Link href="/dashboard" className="animated-link">
+                      <Link href="/docs" className="animated-link">
+                          <span className="link-content">
+                              <span className="link-text">Docs</span>
+                              <span className="link-text">Docs</span>
+                          </span>
+                      </Link>
+                      <Link href="/dashboard" className="animated-link" style={{ display: isAdmin ? 'block' : 'none' }}>
                           <span className="link-content">
                               <span className="link-text">Merchant Dashboard</span>
                               <span className="link-text">Merchant Dashboard</span>
@@ -113,22 +125,22 @@ export default function Home() {
                         </span>
                         <span style={{ color: 'var(--secondary-text-color)', margin: '0 4px', fontSize: '18px' }}>|</span>
                         <SignOutButton>
-                          <div className="animated-link auth-link" style={{ cursor: 'pointer', color: 'var(--secondary-text-color)' }}>
+                          <button className="animated-link auth-link" style={{ cursor: 'pointer', color: 'var(--secondary-text-color)', background: 'transparent', border: 'none', padding: 0, font: 'inherit', pointerEvents: 'all' }}>
                             <span className="link-content">
                               <span className="link-text">Sign Out</span>
                               <span className="link-text">Sign Out</span>
                             </span>
-                          </div>
+                          </button>
                         </SignOutButton>
                       </div>
                     ) : (
                       <SignInButton mode="modal">
-                        <div className="animated-link auth-link" style={{ cursor: 'pointer', color: 'var(--secondary-text-color)' }}>
+                        <button className="animated-link auth-link" style={{ cursor: 'pointer', color: 'var(--secondary-text-color)', background: 'transparent', border: 'none', padding: 0, font: 'inherit', pointerEvents: 'all' }}>
                           <span className="link-content">
                             <span className="link-text">Sign In</span>
                             <span className="link-text">Sign In</span>
                           </span>
-                        </div>
+                        </button>
                       </SignInButton>
                     )}
                   </div>
@@ -151,17 +163,23 @@ export default function Home() {
           
           <div className="bottom-bar">
               <div className="bar-location">
-                  <p>Based in Cyberspace</p>
+                  <p>Intelligent Commerce Engine</p>
               </div>
-              <div className="bar-projects">
+              <div className="bar-projects" style={{ display: 'flex', gap: '2rem' }}>
                   <Link href="/shop" className="animated-link">
                       <span className="link-content">
                           <span className="link-text">Customer Shop<img className="arrow-icon" src="/arrow.svg" alt="Arrow" /></span>
                           <span className="link-text">Customer Shop<img className="arrow-icon" src="/arrow.svg" alt="Arrow" /></span>
                       </span>
                   </Link>
+                  <Link href="/docs" className="animated-link">
+                      <span className="link-content">
+                          <span className="link-text">Docs<img className="arrow-icon" src="/arrow.svg" alt="Arrow" /></span>
+                          <span className="link-text">Docs<img className="arrow-icon" src="/arrow.svg" alt="Arrow" /></span>
+                      </span>
+                  </Link>
               </div>
-              <div className="bar-availability">
+              <div className="bar-availability" style={{ display: isAdmin ? 'block' : 'none' }}>
                   <Link href="/dashboard" className="animated-link">
                       <span className="link-content">
                           <span className="link-text">Merchant Dashboard<img className="arrow-icon" src="/arrow.svg" alt="Arrow" /></span>

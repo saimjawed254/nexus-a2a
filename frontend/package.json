@@ -21,6 +21,7 @@
     "react-markdown": "^10.1.0",
     "react-use": "^17.6.1",
     "recharts": "^3.10.1",
+    "remark-gfm": "^4.0.1",
     "socket.io-client": "^4.8.3",
     "stats.js": "^0.17.0",
     "three": "^0.185.1"

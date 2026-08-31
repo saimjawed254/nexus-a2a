@@ -67,7 +67,10 @@ export default function Dashboard() {
   const { user } = useUser();
   const { signOut } = useClerk();
   const router = useRouter();
-  const isAdmin = user?.primaryEmailAddress?.emailAddress === process.env.NEXT_PUBLIC_ADMIN_EMAIL;
+  
+  const adminEmail = process.env.NEXT_PUBLIC_ADMIN_EMAIL?.toLowerCase();
+  const userEmail = user?.primaryEmailAddress?.emailAddress?.toLowerCase();
+  const isAdmin = !!(userEmail && adminEmail && userEmail === adminEmail);
 
   const [sessions, setSessions] = useState<Session[]>([]);
   const [products, setProducts] = useState<Product[]>([]);
@@ -102,9 +105,17 @@ export default function Dashboard() {
         if (d.products) setProducts(d.products);
       } catch {}
     };
+    const fetchConfig = async () => {
+      try {
+        const r = await fetch(`${API}/api/merchant/config`);
+        const d = await r.json();
+        if (d && !d.error) setConfig(d);
+      } catch {}
+    };
 
     fetchSessions();
     fetchProducts();
+    fetchConfig();
     const interval = setInterval(fetchSessions, 5000);
     const socket = io(API);
     socket.emit('join_merchant_room');
@@ -165,9 +176,9 @@ export default function Dashboard() {
 
   const activeSessions = sessions.filter(s => s.status === 'ACTIVE' || s.status === 'PENDING_MERCHANT_REVIEW');
   const completedSessions = sessions.filter(s => s.status === 'COMPLETED');
-  const totalRevenue = products.reduce((a, p) => a + (p.price * (p.stock - p.allocated_stock)), 0);
-  const totalAllocated = products.reduce((a, p) => a + p.allocated_stock, 0);
-  const totalStock = products.reduce((a, p) => a + p.stock, 0);
+  const actualRevenue = completedSessions.reduce((a, s) => a + Number((s as any).final_offer || 0), 0);
+  const totalAllocated = products.reduce((a, p) => a + Number(p.allocated_stock || 0), 0);
+  const totalStock = products.reduce((a, p) => a + Number(p.stock || 0), 0);
   const allocatedPct = totalStock > 0 ? (totalAllocated / totalStock) * 100 : 0;
   
   // Real data aggregation for graphs
@@ -191,8 +202,9 @@ export default function Dashboard() {
         const key = filter === '1Y' ? d.toLocaleDateString('en-US', {month: 'short', year: '2-digit'}) : d.toLocaleDateString('en-US', {month: 'short', day: 'numeric'});
         if (dataMap.has(key)) {
             // For revenue, we estimate based on average catalog price if we don't have session price
-            const avgPrice = products.length > 0 ? products.reduce((a,p)=>a+p.price,0)/products.length : 5000;
-            dataMap.set(key, dataMap.get(key) + (isRevenue ? avgPrice : 1));
+            const sessionPrice = (s as any).final_offer ? Number((s as any).final_offer) : null;
+            const avgPrice = products.length > 0 ? products.reduce((a,p)=>a+Number(p.price),0)/products.length : 5000;
+            dataMap.set(key, dataMap.get(key) + (isRevenue ? (sessionPrice || avgPrice) : 1));
         }
     });
 
@@ -212,6 +224,17 @@ export default function Dashboard() {
       if (historyFilter === 'PENDING') return s.status === 'PENDING_MERCHANT_REVIEW';
       return true;
   });
+
+  const getPct = (data: any[]) => {
+      if (data.length < 2) return { diff: 0, pct: "0.0", isUp: true };
+      const current = data[data.length - 1].value;
+      const previous = data[0].value || 1;
+      const pct = ((current - previous) / previous) * 100;
+      return { diff: current - previous, pct: Math.abs(pct).toFixed(1), isUp: pct >= 0 };
+  };
+  const dealsT = getPct(dealsData);
+  const revenueT = getPct(revenueData);
+  const successRate = sessions.length > 0 ? (completedSessions.length / sessions.length) * 100 : 0;
 
   if (!isAdmin) {
     return (
@@ -298,21 +321,21 @@ export default function Dashboard() {
                             <label style={{ fontSize: '0.75rem', fontWeight: 700, color: '#9eb0c1' }}>Today's Deals</label>
                             <div className="value-row">
                                 <span className="num" style={{ fontSize: '1.4rem' }}>{completedSessions.length}</span>
-                                <span className="tbl-trend-up" style={{ color: '#2fb344', display: 'flex', alignItems: 'center', gap: '2px' }}>
-                                    12% <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polyline points="22 7 13.5 15.5 8.5 10.5 2 17"/><polyline points="16 7 22 7 22 13"/></svg>
+                                <span className={dealsT.isUp ? "tbl-trend-up" : "tbl-trend-down"} style={{ color: dealsT.isUp ? '#2fb344' : '#d63939', display: 'flex', alignItems: 'center', gap: '2px' }}>
+                                    {dealsT.pct}% <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polyline points={dealsT.isUp ? "22 7 13.5 15.5 8.5 10.5 2 17" : "22 17 13.5 8.5 8.5 13.5 2 7"}/><polyline points={dealsT.isUp ? "16 7 22 7 22 13" : "16 17 22 17 22 11"}/></svg>
                                 </span>
                             </div>
-                            <div className="tbl-progress-bar"><div className="tbl-progress-fill" style={{ width: '75%', background: '#2fb344' }} /></div>
+                            <div className="tbl-progress-bar"><div className="tbl-progress-fill" style={{ width: `${Math.min(successRate, 100)}%`, background: '#2fb344' }} /></div>
                             </div>
                             <div className="tbl-stat-mini">
-                            <label style={{ fontSize: '0.75rem', fontWeight: 700, color: '#9eb0c1' }}>Growth Rate</label>
+                            <label style={{ fontSize: '0.75rem', fontWeight: 700, color: '#9eb0c1' }}>Success Rate</label>
                             <div className="value-row">
-                                <span className="num" style={{ fontSize: '1.4rem' }}>24.5%</span>
-                                <span className="tbl-trend-up" style={{ color: '#0055ff', display: 'flex', alignItems: 'center', gap: '2px' }}>
-                                    3.1% <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polyline points="22 7 13.5 15.5 8.5 10.5 2 17"/><polyline points="16 7 22 7 22 13"/></svg>
+                                <span className="num" style={{ fontSize: '1.4rem' }}>{successRate.toFixed(1)}%</span>
+                                <span className={revenueT.isUp ? "tbl-trend-up" : "tbl-trend-down"} style={{ color: revenueT.isUp ? '#0055ff' : '#d63939', display: 'flex', alignItems: 'center', gap: '2px' }}>
+                                    {revenueT.pct}% <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polyline points={revenueT.isUp ? "22 7 13.5 15.5 8.5 10.5 2 17" : "22 17 13.5 8.5 8.5 13.5 2 7"}/><polyline points={revenueT.isUp ? "16 7 22 7 22 13" : "16 17 22 17 22 11"}/></svg>
                                 </span>
                             </div>
-                            <div className="tbl-progress-bar"><div className="tbl-progress-fill" style={{ width: '24%', background: '#0055ff' }} /></div>
+                            <div className="tbl-progress-bar"><div className="tbl-progress-fill" style={{ width: `${Math.min(successRate, 100)}%`, background: '#0055ff' }} /></div>
                             </div>
                         </div>
                         </div>
@@ -336,7 +359,7 @@ export default function Dashboard() {
                                 <option value="1Y">Last Year</option>
                             </select>
                         </div>
-                        <div className="tbl-stat-main" style={{ fontSize: '1.6rem' }}>{completedSessions.length} <span className="tbl-trend-up" style={{ fontSize: '0.9rem', color: '#2fb344', display: 'inline-flex', alignItems: 'center', gap: '2px' }}>12% <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polyline points="22 7 13.5 15.5 8.5 10.5 2 17"/><polyline points="16 7 22 7 22 13"/></svg></span></div>
+                        <div className="tbl-stat-main" style={{ fontSize: '1.6rem' }}>{completedSessions.length} <span className={dealsT.isUp ? "tbl-trend-up" : "tbl-trend-down"} style={{ fontSize: '0.9rem', color: dealsT.isUp ? '#2fb344' : '#d63939', display: 'inline-flex', alignItems: 'center', gap: '2px' }}>{dealsT.pct}% <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polyline points={dealsT.isUp ? "22 7 13.5 15.5 8.5 10.5 2 17" : "22 17 13.5 8.5 8.5 13.5 2 7"}/><polyline points={dealsT.isUp ? "16 7 22 7 22 13" : "16 17 22 17 22 11"}/></svg></span></div>
                         
                         <div style={{ flex: 1, minHeight: '140px', marginTop: '1rem', width: '100%', marginLeft: '-15px' }}>
                             <ResponsiveContainer width="100%" height="100%">
@@ -358,14 +381,14 @@ export default function Dashboard() {
                     <div className="tbl-card h-100">
                         <div className="tbl-card-body" style={{ flex: 1, display: 'flex', flexDirection: 'column' }}>
                         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.5rem' }}>
-                            <div className="tbl-subheader" style={{ fontSize: '0.75rem' }}>Inventory Value</div>
+                            <div className="tbl-subheader" style={{ fontSize: '0.75rem' }}>Total Revenue</div>
                             <select value={revenueFilter} onChange={e => setRevenueFilter(e.target.value)} style={{ border: '1px solid #e6ebf1', borderRadius: '4px', padding: '2px 6px', background: '#f8fafc', fontSize: '0.75rem', color: '#62778d', cursor: 'pointer', outline: 'none' }}>
                                 <option value="7D">Last 7 days</option>
                                 <option value="1M">Last Month</option>
                                 <option value="1Y">Last Year</option>
                             </select>
                         </div>
-                        <div className="tbl-stat-main" style={{ fontSize: '1.6rem' }}>{formatCurrency(totalRevenue)}</div>
+                        <div className="tbl-stat-main" style={{ fontSize: '1.6rem' }}>{formatCurrency(actualRevenue)}</div>
                         
                         <div style={{ flex: 1, minHeight: '140px', marginTop: '1rem', width: '100%', marginLeft: '-10px' }}>
                             <ResponsiveContainer width="100%" height="100%">
@@ -490,7 +513,7 @@ export default function Dashboard() {
                         </select>
                     </div>
                     <div style={{ color: '#62778d', fontSize: '0.9rem', marginBottom: '0.25rem' }}>
-                        Total Value Locked: <strong style={{ color: '#182433' }}>{formatCurrency(totalRevenue)}</strong>
+                        Total Value Locked: <strong style={{ color: '#182433' }}>{formatCurrency(actualRevenue)}</strong>
                     </div>
                     <div className="tbl-trend-up" style={{ marginBottom: '1rem', color: '#0055ff', display: 'flex', alignItems: 'center', gap: '4px' }}>Stable Growth <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polyline points="22 7 13.5 15.5 8.5 10.5 2 17"/><polyline points="16 7 22 7 22 13"/></svg></div>
                     

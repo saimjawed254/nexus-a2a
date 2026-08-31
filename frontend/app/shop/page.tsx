@@ -5,6 +5,7 @@ import { useUser, useClerk } from '@clerk/nextjs';
 import { useRouter } from 'next/navigation';
 import toast from 'react-hot-toast';
 import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 import Script from 'next/script';
 import Confetti from 'react-confetti';
 import { useWindowSize } from 'react-use';
@@ -75,11 +76,15 @@ export default function Shop() {
   const { user } = useUser();
   const { signOut } = useClerk();
   const router = useRouter();
-  const isAdmin = user?.primaryEmailAddress?.emailAddress === process.env.NEXT_PUBLIC_ADMIN_EMAIL;
+  const adminEmail = process.env.NEXT_PUBLIC_ADMIN_EMAIL?.toLowerCase();
+  const userEmail = user?.primaryEmailAddress?.emailAddress?.toLowerCase();
+  const isAdmin = !!(userEmail && adminEmail && userEmail === adminEmail);
   
   const [view, setView] = useState<'search' | 'cart' | 'history' | 'chat'>('search');
   const [query, setQuery] = useState('');
   const [products, setProducts] = useState<Product[]>([]);
+  const [page, setPage] = useState(1);
+  const [totalPages, setTotalPages] = useState(1);
   const [searching, setSearching] = useState(false);
   const [cart, setCart] = useState<CartItem[]>([]);
 
@@ -181,8 +186,12 @@ export default function Shop() {
     fetch(`${API}/api/discovery/discover`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ query: '' })
-    }).then(r => r.json()).then(d => setProducts(d.products || []));
+      body: JSON.stringify({ query: '', page: 1 })
+    }).then(r => r.json()).then(d => {
+      setProducts(d.products || []);
+      setTotalPages(d.total_pages || 1);
+      setPage(1);
+    });
   }, []);
 
   // Timer Countdown
@@ -210,19 +219,53 @@ export default function Shop() {
     }
   }, [sessionStatus, sessionId]);
 
-  const handleSearch = async (overrideQuery?: string) => {
+  // Poll active session for updates (e.g. Admin Approval)
+  useEffect(() => {
+    if (!sessionId) return;
+    const interval = setInterval(async () => {
+      try {
+        const hr = await fetch(`${API}/api/negotiation/session/${sessionId}`);
+        if (hr.ok) {
+          const hd = await hr.json();
+          if (hd.session) {
+            setSessionStatus(hd.session.status);
+            if (hd.session.messages && hd.session.messages.length > 0) {
+                setMessages(prev => {
+                    // Only update if there are new messages to prevent unnecessary re-renders
+                    if (hd.session.messages.length !== prev.length) return hd.session.messages;
+                    return prev;
+                });
+            }
+            const foMessage = hd.session.messages?.filter((m: any) => m.role === 'AGENT' && m.final_price).pop();
+            setFinalPrice(foMessage ? foMessage.final_price : null);
+          }
+        }
+      } catch (e) {
+        // Silently ignore polling errors
+      }
+    }, 3000);
+    return () => clearInterval(interval);
+  }, [sessionId]);
+
+  const handleSearch = async (overrideQuery?: string, pageNumber: number = 1) => {
     const q = overrideQuery !== undefined ? overrideQuery : query;
-    setSearching(true);
+    if (pageNumber === 1) setSearching(true);
     try {
       const r = await fetch(`${API}/api/discovery/discover`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ query: q })
+        body: JSON.stringify({ query: q, page: pageNumber })
       });
       const d = await r.json();
-      setProducts(d.products || []);
+      if (pageNumber === 1) {
+        setProducts(d.products || []);
+      } else {
+        setProducts(prev => [...prev, ...(d.products || [])]);
+      }
+      setTotalPages(d.total_pages || 1);
+      setPage(pageNumber);
     } catch (e) { toast.error('Failed to search'); }
-    setSearching(false);
+    if (pageNumber === 1) setSearching(false);
   };
 
   const addToCart = (product: Product) => {
@@ -597,6 +640,19 @@ export default function Shop() {
                   );
                 })}
               </div>
+
+              {page < totalPages && (
+                <div style={{ textAlign: 'center', marginTop: '2rem' }}>
+                  <button 
+                    className="tbl-btn tbl-btn-secondary" 
+                    onClick={() => handleSearch(undefined, page + 1)}
+                    disabled={searching}
+                    style={{ padding: '10px 32px', borderRadius: '100px', fontSize: '1rem', color: '#616161', background: 'rgba(255, 255, 255, 0.1)', backdropFilter: 'blur(10px)', border: '1px solid rgba(255, 255, 255, 0.2)' }}
+                  >
+                    {searching ? 'Loading...' : 'Load More Products'}
+                  </button>
+                </div>
+              )}
             </div>
           )}
 
@@ -779,7 +835,7 @@ export default function Shop() {
                           boxShadow: isUser ? '0 4px 12px rgba(0,85,255,0.2)' : '0 4px 12px rgba(0,0,0,0.05)'
                       }}>
                         <div style={{ fontSize: '0.7rem', opacity: 0.7, marginBottom: '0.25rem', textTransform: 'uppercase', fontWeight: 600 }}>{m.role === 'AGENT' ? 'AI Agent' : m.role}</div>
-                        <div className="markdown-body" style={{ fontSize: '0.95rem' }}><ReactMarkdown>{m.content}</ReactMarkdown></div>
+                        <div className="markdown-body" style={{ fontSize: '0.95rem' }}><ReactMarkdown remarkPlugins={[remarkGfm]}>{m.content}</ReactMarkdown></div>
                         {m.final_price && m.role === 'AGENT' && (
                           <div style={{ marginTop: '0.75rem', padding: '0.5rem 0.75rem', background: 'rgba(0, 85, 255, 0.1)', borderRadius: '4px', fontSize: '0.85rem' }}>
                             <strong style={{ color: '#0055ff' }}>Final Offer: {formatCurrency(m.final_price)}</strong>

@@ -36,19 +36,27 @@ User Query: "${query}"
 
 discoveryRouter.post('/discover', async (req: Request, res: Response) => {
   try {
-    const { query } = req.body;
+    const { query, page = 1, limit = 20 } = req.body;
+    const offset = (page - 1) * limit;
     
-    // If empty query (e.g. initial load), return newest products
+    // If empty query (e.g. initial load), return newest products with pagination
     if (!query) {
       const result = await pool.query(`
         SELECT id, name, brand, model, category, description, specs, price, (stock - allocated_stock) as available_stock
         FROM products
         WHERE (stock - allocated_stock) > 0
         ORDER BY created_at DESC
-        LIMIT 20
-      `);
+        LIMIT $1 OFFSET $2
+      `, [limit, offset]);
+      
+      const countResult = await pool.query(`SELECT COUNT(*) FROM products WHERE (stock - allocated_stock) > 0`);
+      const total = parseInt(countResult.rows[0].count, 10);
+      
       return res.json({
         products: result.rows,
+        total,
+        page,
+        total_pages: Math.ceil(total / limit),
         query_metadata: {
           semantic_score_max: 1,
           hard_filters_applied: false,
@@ -84,8 +92,9 @@ discoveryRouter.post('/discover', async (req: Request, res: Response) => {
 
 
 
-    // Only return top 10 most relevant matches
-    sql += ` ORDER BY embedding <=> $1::vector LIMIT 10`;
+    // Apply Pagination to semantic search
+    sql += ` ORDER BY embedding <=> $1::vector LIMIT $${paramIndex} OFFSET $${paramIndex + 1}`;
+    params.push(limit, offset);
 
     const result = await pool.query(sql, params);
 
@@ -98,6 +107,8 @@ discoveryRouter.post('/discover', async (req: Request, res: Response) => {
 
     res.json({
       products,
+      page,
+      limit,
       query_metadata: {
         semantic_score_max: result.rows.length > 0 ? result.rows[0].semantic_score : 0,
         hard_filters_applied: hasFilters,

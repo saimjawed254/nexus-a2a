@@ -30,6 +30,7 @@ adminRouter.post('/terminate/:session_id', async (req: Request, res: Response) =
     await SessionManager.terminateSession(session_id, reason);
     await InventoryManager.releaseAllocation(session_id);
     await SessionManager.logMessage(session_id, 'SYSTEM', `MERCHANT TRIGGERED KILL SWITCH: ${reason}`);
+    await SessionManager.logMessage(session_id, 'AGENT', 'We sincerely apologize, but the merchant has decided to close this negotiation session. Your cart remains intact if you wish to try again later.');
 
     res.json({ success: true, message: 'Session forcefully terminated and stock released.' });
   } catch (error: any) {
