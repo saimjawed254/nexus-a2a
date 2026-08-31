@@ -7,6 +7,33 @@ interface CartItem {
 
 export class InventoryManager {
   /**
+   * Checks if sufficient stock is available without allocating it.
+   */
+  static async checkAvailability(cartItems: CartItem[]): Promise<boolean> {
+    const client = await pool.connect();
+    try {
+      for (const item of cartItems) {
+        const res = await client.query(`
+          SELECT id, name FROM products 
+          WHERE id = $1 AND (stock - allocated_stock) >= $2
+        `, [item.product_id, item.quantity]);
+        
+        if (res.rows.length === 0) {
+          const nameRes = await client.query('SELECT name FROM products WHERE id = $1', [item.product_id]);
+          const pName = nameRes.rows.length > 0 ? nameRes.rows[0].name : item.product_id;
+          throw new Error(JSON.stringify({ 
+            message: `Insufficient stock for: ${pName}`, 
+            product_id: item.product_id 
+          }));
+        }
+      }
+      return true;
+    } finally {
+      client.release();
+    }
+  }
+
+  /**
    * Soft allocates stock for a session.
    * Throws an error if there is insufficient available stock (stock - allocated_stock).
    */

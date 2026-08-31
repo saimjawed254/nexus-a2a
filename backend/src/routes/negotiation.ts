@@ -56,6 +56,19 @@ negotiationRouter.get('/sessions/user/:clerkUserId', async (req: Request, res: R
   }
 });
 
+negotiationRouter.get('/session/:sessionId', async (req: Request, res: Response) => {
+  try {
+    const sessionId = req.params.sessionId as string;
+    const sessionRes = await pool.query('SELECT * FROM sessions WHERE id = $1', [sessionId]);
+    if (sessionRes.rows.length === 0) return res.status(404).json({ error: 'Session not found' });
+    
+    const messages = await SessionManager.getSessionMessages(sessionId);
+    res.json({ session: { ...sessionRes.rows[0], messages } });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // Simple in-memory rate limiter for chat (1 message per 2 seconds per session)
 const chatRateLimit = new Map<string, number>();
 
@@ -88,11 +101,10 @@ negotiationRouter.post('/start', async (req: Request, res: Response) => {
       );
     }
 
-    // Soft allocate inventory (only updates allocated_stock, no more cart inserts)
+    // Check availability (but don't allocate yet)
     try {
-      await InventoryManager.softAllocate(sessionId, cart);
+      await InventoryManager.checkAvailability(cart);
     } catch (e: any) {
-      await InventoryManager.releaseAllocation(sessionId);
       await SessionManager.terminateSession(sessionId, 'INSUFFICIENT_STOCK');
       let errorMsg = e.message;
       let outOfStockId = null;
@@ -189,8 +201,8 @@ negotiationRouter.post('/session/:sessionId/cart', async (req: Request, res: Res
       return res.status(400).json({ error: 'Session has expired. Please start a new negotiation.' });
     }
 
-    // Release old allocation only (cart_items deleted separately)
-    await InventoryManager.releaseAllocation(sessionId);
+    // We don't need to release allocation because we only allocate upon approval now.
+    // Just clear the old cart items.
     await pool.query('DELETE FROM cart_items WHERE session_id = $1', [sessionId]);
 
     // Insert new cart items
@@ -206,11 +218,10 @@ negotiationRouter.post('/session/:sessionId/cart', async (req: Request, res: Res
       );
     }
 
-    // Soft allocate new items (only allocated_stock, no cart inserts)
+    // Check availability of new items (no allocation yet)
     try {
-      await InventoryManager.softAllocate(sessionId, cart);
+      await InventoryManager.checkAvailability(cart);
     } catch (e: any) {
-      await InventoryManager.releaseAllocation(sessionId);
       await SessionManager.terminateSession(sessionId, 'INSUFFICIENT_STOCK');
       let errorMsg = e.message;
       let outOfStockId = null;
@@ -375,8 +386,31 @@ ${message}
 
     // If deal is closed (either by AI naturally or forced by max rounds), update status
     if (dealClosed) {
-      await pool.query(`UPDATE sessions SET status = 'PENDING_MERCHANT_REVIEW' WHERE id = $1`, [sessionId]);
-      if (systemDecision === "CONTINUE") systemDecision = "DEAL_CLOSED";
+      const configRes2 = await pool.query('SELECT require_manual_approval FROM merchant_config LIMIT 1');
+      const requireManual = configRes2.rows.length > 0 ? configRes2.rows[0].require_manual_approval : false;
+      
+      if (requireManual) {
+        // Pending Review - Do NOT allocate stock yet
+        await pool.query(`UPDATE sessions SET status = 'PENDING_MERCHANT_REVIEW' WHERE id = $1`, [sessionId]);
+        if (systemDecision === "CONTINUE") systemDecision = "DEAL_CLOSED";
+      } else {
+        // Auto Approve - Attempt stock allocation NOW
+        try {
+          const cartRes2 = await pool.query('SELECT product_id, quantity FROM cart_items WHERE session_id = $1', [sessionId]);
+          await InventoryManager.softAllocate(sessionId, cartRes2.rows);
+          
+          await pool.query(`UPDATE sessions SET status = 'APPROVED' WHERE id = $1`, [sessionId]);
+          if (systemDecision === "CONTINUE") systemDecision = "DEAL_CLOSED";
+        } catch (e: any) {
+          // Stock ran out while chatting!
+          dealClosed = false;
+          finalOffer = null;
+          let pName = 'an item';
+          try { pName = JSON.parse(e.message).message.split(': ')[1]; } catch (_) {}
+          replyMessage += `\n\n**System Notice:** Unfortunately, ${pName} just went out of stock while we were negotiating. We cannot finalize this deal right now.`;
+          systemDecision = "OUT_OF_STOCK_DURING_CHAT";
+        }
+      }
     }
 
     // Log AI response and System decision
@@ -399,11 +433,21 @@ ${message}
       });
     }
 
+    // Determine final status string to return
+    let finalStatus = 'ACTIVE';
+    if (dealClosed) {
+      if (systemDecision === "OUT_OF_STOCK_DURING_CHAT") finalStatus = 'ACTIVE'; // They can still chat if they remove the item
+      else {
+        const sRes = await pool.query('SELECT status FROM sessions WHERE id = $1', [sessionId]);
+        finalStatus = sRes.rows[0].status;
+      }
+    }
+
     res.json({
       reply: replyMessage,
       round: currentRound,
       max_rounds: config.max_rounds,
-      status: dealClosed ? 'PENDING_MERCHANT_REVIEW' : 'ACTIVE',
+      status: finalStatus,
       final_price: finalOffer
     });
 

@@ -1,0 +1,104 @@
+/* Glassmorphism Cards for 3D Background */
+.glass-card {
+    background: rgba(255, 255, 255, 0.1);
+    backdrop-filter: blur(16px);
+    -webkit-backdrop-filter: blur(16px);
+    border: 1px solid rgba(255, 255, 255, 0.15);
+    border-radius: 12px;
+    box-shadow: 0 4px 30px rgba(0, 0, 0, 0.1);
+    overflow: hidden;
+    transition: transform 0.2s, box-shadow 0.2s, background 0.2s;
+    color: #616161;
+}
+
+.glass-card:hover {
+    transform: translateY(-4px);
+    box-shadow: 0 12px 40px 0 rgba(0, 0, 0, 0.15);
+    background: rgba(255, 255, 255, 0.15);
+}
+
+.glass-search-bar {
+    background: rgba(255, 255, 255, 0.1);
+    backdrop-filter: blur(16px);
+    -webkit-backdrop-filter: blur(16px);
+    border: 1px solid rgba(255, 255, 255, 0.15);
+    border-radius: 100px;
+    padding: 8px 12px;
+    display: flex;
+    align-items: center;
+    box-shadow: 0 12px 40px 0 rgba(0, 0, 0, 0.08);
+    max-width: 700px;
+    margin: 0 auto 3rem auto;
+}
+
+.glass-search-input {
+    border: none;
+    background: transparent;
+    font-size: 1.1rem;
+    padding: 12px 20px;
+    flex: 1;
+    color: #616161;
+    outline: none;
+}
+
+.glass-search-input::placeholder {
+    color: #616161;
+    opacity: 0.7;
+}
+
+/* 4-column layout */
+.grid-4-col {
+    display: grid;
+    grid-template-columns: repeat(1, 1fr);
+    gap: 1.5rem;
+}
+
+@media (min-width: 640px) {
+    .grid-4-col {
+        grid-template-columns: repeat(2, 1fr);
+    }
+}
+
+@media (min-width: 1024px) {
+    .grid-4-col {
+        grid-template-columns: repeat(3, 1fr);
+    }
+}
+
+@media (min-width: 1400px) {
+    .grid-4-col {
+        grid-template-columns: repeat(4, 1fr);
+    }
+}
+
+/* Canvas background overlay fix */
+.shop-overlay-content {
+    position: relative;
+    z-index: 10;
+    width: 100%;
+    height: 100vh;
+    overflow-y: auto;
+}
+
+/* Hide scrollbar for cleaner look */
+.shop-overlay-content::-webkit-scrollbar {
+    width: 8px;
+}
+.shop-overlay-content::-webkit-scrollbar-track {
+    background: rgba(255, 255, 255, 0.1);
+}
+.shop-overlay-content::-webkit-scrollbar-thumb {
+    background: rgba(0, 0, 0, 0.2);
+    border-radius: 10px;
+}
+
+/* 3D Background Canvas */
+.webgl {
+    position: fixed;
+    top: 0;
+    left: 0;
+    outline: none;
+    z-index: 1; /* Below the overlay content (z-index 10) */
+    pointer-events: none; /* Let clicks pass through */
+}
+

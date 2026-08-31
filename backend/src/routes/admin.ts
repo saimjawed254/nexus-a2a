@@ -47,6 +47,16 @@ adminRouter.post('/review/:session_id/approve', async (req: Request, res: Respon
       return res.status(400).json({ error: 'Session is not pending review' });
     }
 
+    // Allocate stock NOW before approving
+    try {
+      const cartRes = await pool.query('SELECT product_id, quantity FROM cart_items WHERE session_id = $1', [session_id]);
+      await InventoryManager.softAllocate(session_id, cartRes.rows);
+    } catch (e: any) {
+      let pName = 'an item';
+      try { pName = JSON.parse(e.message).message.split(': ')[1]; } catch (_) {}
+      return res.status(400).json({ error: `Cannot approve deal. ${pName} is now out of stock.` });
+    }
+
     await pool.query(`UPDATE sessions SET status = 'APPROVED' WHERE id = $1`, [session_id]);
     await SessionManager.logMessage(session_id, 'MERCHANT', `Deal Approved. Generating payment link.`);
 
@@ -88,16 +98,27 @@ adminRouter.post('/review/:session_id/reject', async (req: Request, res: Respons
 adminRouter.get('/sessions', async (req: Request, res: Response) => {
   try {
     const { status } = req.query;
-    let query = 'SELECT * FROM sessions';
+    let query = `
+      SELECT s.*, 
+        (SELECT (metadata->>'finalOffer')::numeric 
+         FROM session_messages sm 
+         WHERE sm.session_id = s.id 
+           AND sm.metadata IS NOT NULL 
+           AND sm.metadata::text LIKE '%finalOffer%'
+         ORDER BY created_at DESC LIMIT 1
+        ) as final_offer
+      FROM sessions s
+    `;
     const params: any[] = [];
     if (status) {
-      query += ' WHERE status = $1';
+      query += ' WHERE s.status = $1';
       params.push(status);
     }
-    query += ' ORDER BY created_at DESC LIMIT 100';
+    query += ' ORDER BY s.created_at DESC LIMIT 100';
     const result = await pool.query(query, params);
     res.json({ sessions: result.rows });
   } catch (error: any) {
+    console.error('Failed to fetch sessions:', error);
     res.status(500).json({ error: 'Failed to fetch sessions' });
   }
 });

@@ -37,8 +37,24 @@ User Query: "${query}"
 discoveryRouter.post('/discover', async (req: Request, res: Response) => {
   try {
     const { query } = req.body;
+    
+    // If empty query (e.g. initial load), return newest products
     if (!query) {
-      return res.status(400).json({ error: 'Query is required' });
+      const result = await pool.query(`
+        SELECT id, name, brand, model, category, description, specs, price, (stock - allocated_stock) as available_stock
+        FROM products
+        WHERE (stock - allocated_stock) > 0
+        ORDER BY created_at DESC
+        LIMIT 20
+      `);
+      return res.json({
+        products: result.rows,
+        query_metadata: {
+          semantic_score_max: 1,
+          hard_filters_applied: false,
+          extracted_filters: {}
+        }
+      });
     }
 
     // Extract hard filters

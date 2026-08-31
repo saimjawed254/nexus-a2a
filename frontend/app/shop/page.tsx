@@ -1,13 +1,16 @@
 'use client';
 
 import { useState, useEffect, useRef, useCallback } from 'react';
-import { useUser } from '@clerk/nextjs';
-import Nav from '../components/Nav';
+import { useUser, useClerk } from '@clerk/nextjs';
+import { useRouter } from 'next/navigation';
 import toast from 'react-hot-toast';
 import ReactMarkdown from 'react-markdown';
 import Script from 'next/script';
 import Confetti from 'react-confetti';
 import { useWindowSize } from 'react-use';
+import Orchestrator from '../../lib/ThreeJS/Orchestrator';
+import '../dashboard/dashboard.css';
+import './shop.css';
 const API = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:4000';
 
 interface Product {
@@ -36,16 +39,16 @@ function timeAgo(dateString: string) {
 }
 
 const CATEGORY_GRADIENTS: Record<string, string> = {
-  'laptop': 'linear-gradient(135deg, #1a1a2e 0%, #16213e 100%)',
-  'desktop': 'linear-gradient(135deg, #0f3460 0%, #16213e 100%)',
-  'keyboard': 'linear-gradient(135deg, #1e3a5f 0%, #0d1b2a 100%)',
-  'monitor': 'linear-gradient(135deg, #1b2a4a 0%, #0a192f 100%)',
-  'mouse': 'linear-gradient(135deg, #2d1b69 0%, #11072f 100%)',
-  'headphone': 'linear-gradient(135deg, #1a0533 0%, #2d1b69 100%)',
-  'gpu': 'linear-gradient(135deg, #003d1a 0%, #001a0d 100%)',
-  'cpu': 'linear-gradient(135deg, #3d1a00 0%, #1a0d00 100%)',
-  'storage': 'linear-gradient(135deg, #1a1a00 0%, #0d0d00 100%)',
-  'default': 'linear-gradient(135deg, #1a2a3a 0%, #0d1a27 100%)',
+  'laptop': 'linear-gradient(135deg, #e8f4fd 0%, #d6e9fa 100%)',
+  'desktop': 'linear-gradient(135deg, #e8f4fd 0%, #d6e9fa 100%)',
+  'keyboard': 'linear-gradient(135deg, #e8f4fd 0%, #d6e9fa 100%)',
+  'monitor': 'linear-gradient(135deg, #e8f4fd 0%, #d6e9fa 100%)',
+  'mouse': 'linear-gradient(135deg, #e8f4fd 0%, #d6e9fa 100%)',
+  'headphone': 'linear-gradient(135deg, #e8f4fd 0%, #d6e9fa 100%)',
+  'gpu': 'linear-gradient(135deg, #e8f4fd 0%, #d6e9fa 100%)',
+  'cpu': 'linear-gradient(135deg, #e8f4fd 0%, #d6e9fa 100%)',
+  'storage': 'linear-gradient(135deg, #e8f4fd 0%, #d6e9fa 100%)',
+  'default': 'linear-gradient(135deg, #e8f4fd 0%, #d6e9fa 100%)',
 };
 
 const CATEGORY_ICONS: Record<string, string> = {
@@ -70,7 +73,11 @@ const EXAMPLE_QUERIES = [
 export default function Shop() {
   const { width, height } = useWindowSize();
   const { user } = useUser();
-  const [view, setView] = useState<'search' | 'cart' | 'chat'>('search');
+  const { signOut } = useClerk();
+  const router = useRouter();
+  const isAdmin = user?.primaryEmailAddress?.emailAddress === process.env.NEXT_PUBLIC_ADMIN_EMAIL;
+  
+  const [view, setView] = useState<'search' | 'cart' | 'history' | 'chat'>('search');
   const [query, setQuery] = useState('');
   const [products, setProducts] = useState<Product[]>([]);
   const [searching, setSearching] = useState(false);
@@ -97,6 +104,18 @@ export default function Shop() {
   const [historyFilter, setHistoryFilter] = useState<'ALL' | 'ACTIVE' | 'REVIEW' | 'CLOSED'>('ALL');
 
   const bottomRef = useRef<HTMLDivElement>(null);
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+
+  // Initialize ThreeJS Background
+  useEffect(() => {
+    let orchestrator: Orchestrator | null = null;
+    if (canvasRef.current) {
+      orchestrator = new Orchestrator(canvasRef.current);
+    }
+    return () => {
+      if (orchestrator) orchestrator.destroy();
+    };
+  }, []);
 
   useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [messages, sending, view]);
 
@@ -145,89 +164,54 @@ export default function Shop() {
     }
   }, [cart, initialCartLoaded, user?.id]);
 
-  // Pre-fill phone from Clerk
+  // Fetch Session History
   useEffect(() => {
-    if (user?.primaryPhoneNumber?.phoneNumber && !phone) {
-      setPhone(user.primaryPhoneNumber.phoneNumber);
-    }
-  }, [user]);
-
-  // Session expiry countdown timer
-  useEffect(() => {
-    if (!sessionExpiry || sessionStatus !== 'ACTIVE') { setTimeLeft(''); return; }
-    const tick = () => {
-      const remaining = sessionExpiry.getTime() - Date.now();
-      if (remaining <= 0) { setTimeLeft('Expired'); return; }
-      const mins = Math.floor(remaining / 60000);
-      const secs = Math.floor((remaining % 60000) / 1000);
-      setTimeLeft(`${mins}:${secs.toString().padStart(2, '0')}`);
+    const fetchHistory = async () => {
+      if (!user?.id) return;
+      try {
+        const r = await fetch(`${API}/api/negotiation/sessions/user/${user.id}`);
+        const d = await r.json();
+        if (d.sessions) setHistory(d.sessions);
+      } catch (e) { console.error('Failed to fetch history', e); }
     };
-    tick();
-    const interval = setInterval(tick, 1000);
+    fetchHistory();
+  }, [user?.id, sessionId, sessionStatus]);
+
+  useEffect(() => {
+    fetch(`${API}/api/discovery/discover`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ query: '' })
+    }).then(r => r.json()).then(d => setProducts(d.products || []));
+  }, []);
+
+  // Timer Countdown
+  useEffect(() => {
+    if (!sessionExpiry || sessionStatus !== 'ACTIVE') return;
+    const interval = setInterval(() => {
+      const diff = sessionExpiry.getTime() - new Date().getTime();
+      if (diff <= 0) {
+        setTimeLeft('0:00');
+        setSessionStatus('TERMINATED');
+        clearInterval(interval);
+      } else {
+        const m = Math.floor(diff / 60000);
+        const s = Math.floor((diff % 60000) / 1000);
+        setTimeLeft(`${m}:${s.toString().padStart(2, '0')}`);
+      }
+    }, 1000);
     return () => clearInterval(interval);
   }, [sessionExpiry, sessionStatus]);
 
-  const loadSessionData = useCallback(async (uid: string) => {
-    try {
-      const [hRes, aRes] = await Promise.all([
-        fetch(`${API}/api/negotiation/sessions/user/${uid}`),
-        fetch(`${API}/api/negotiation/session/active?clerk_user_id=${uid}`)
-      ]);
-      const [hData, aData] = await Promise.all([hRes.json(), aRes.json()]);
-      if (hData.sessions) setHistory(hData.sessions);
-      if (aData.session) {
-        setSessionId(aData.session.id);
-        setSessionStatus(aData.session.status);
-        setFinalPrice(aData.finalPrice);
-        setMessages(aData.messages || []);
-        if (aData.session.expires_at) setSessionExpiry(new Date(aData.session.expires_at));
-        // Auto-load into chat for ACTIVE and APPROVED so the user can see the payment button
-        if (aData.session.status === 'ACTIVE' || aData.session.status === 'APPROVED') {
-          setView('chat');
-        }
-      }
-    } catch (e) { console.error(e); }
-  }, []);
-
-  useEffect(() => { if (!user?.id) return; loadSessionData(user.id); }, [user?.id, loadSessionData]);
-
+  // Clear session if active one expires
   useEffect(() => {
-    fetch(`${API}/api/merchant/config`).then(r => r.json()).then(d => {
-      if (d.max_rounds) setMaxRounds(d.max_rounds);
-    }).catch(() => {});
-  }, []);
+    if (sessionStatus === 'TERMINATED' && sessionId) {
+      toast.error('Session expired.');
+    }
+  }, [sessionStatus, sessionId]);
 
-  // Polling
-  useEffect(() => {
-    if (!user?.id) return;
-    const interval = setInterval(async () => {
-      try {
-        const hRes = await fetch(`${API}/api/negotiation/sessions/user/${user.id}`);
-        const hData = await hRes.json();
-        if (hData.sessions) setHistory(hData.sessions);
-        if (sessionId) {
-          const aRes = await fetch(`${API}/api/negotiation/session/active?clerk_user_id=${user.id}`);
-          const aData = await aRes.json();
-            if (aData.session && aData.session.id === sessionId) {
-              setSessionStatus(aData.session.status);
-              setFinalPrice(aData.finalPrice);
-              if (aData.session.expires_at) setSessionExpiry(new Date(aData.session.expires_at));
-              if (aData.messages && aData.messages.length > messages.length) setMessages(aData.messages);
-            } else if (!aData.session) {
-              // If we are viewing a session that the active endpoint says doesn't exist, it must be terminated.
-              // Let history poll update it, but immediately fail-safe the status if it was active.
-              if (sessionStatus === 'ACTIVE') setSessionStatus('TERMINATED');
-            }
-        }
-      } catch (e) {}
-    }, 3000);
-    return () => clearInterval(interval);
-  }, [user?.id, sessionId, messages.length, sessionStatus]);
-
-  const handleSearch = async (searchQuery?: string) => {
-    const q = searchQuery || query;
-    if (!q.trim()) return;
-    if (!searchQuery) setQuery(q);
+  const handleSearch = async (overrideQuery?: string) => {
+    const q = overrideQuery !== undefined ? overrideQuery : query;
     setSearching(true);
     try {
       const r = await fetch(`${API}/api/discovery/discover`, {
@@ -236,187 +220,215 @@ export default function Shop() {
         body: JSON.stringify({ query: q })
       });
       const d = await r.json();
-      if (!r.ok) throw new Error(d.error);
       setProducts(d.products || []);
-    } catch (e: any) {
-      toast.error(`Search failed: ${e.message}`);
-    } finally { setSearching(false); }
-  };
-
-  const updateCartQuantity = (id: string, delta: number) => {
-    setCart(prev => prev.map(c => {
-      if (c.id === id) { const newQ = c.quantity + delta; return newQ > 0 ? { ...c, quantity: newQ } : c; }
-      return c;
-    }));
+    } catch (e) { toast.error('Failed to search'); }
+    setSearching(false);
   };
 
   const addToCart = (product: Product) => {
     setCart(prev => {
-      const existing = prev.find(c => c.id === product.id);
-      if (existing) return prev.map(c => c.id === product.id ? { ...c, quantity: c.quantity + 1, outOfStock: false } : c);
+      const ex = prev.find(p => p.id === product.id);
+      if (ex) {
+        if (ex.quantity >= product.available_stock) { toast.error('Max stock reached'); return prev; }
+        return prev.map(p => p.id === product.id ? { ...p, quantity: p.quantity + 1, outOfStock: false } : p);
+      }
       return [...prev, { ...product, quantity: 1, outOfStock: false }];
     });
     toast.success('Added to cart');
   };
 
-  const removeFromCart = (id: string) => setCart(prev => prev.filter(c => c.id !== id));
-  const cartTotal = cart.reduce((sum, item) => sum + item.price * item.quantity, 0);
-  const cartItemCount = cart.reduce((sum, item) => sum + item.quantity, 0);
-
-  const handleStartOrUpdateClick = () => {
-    if (!user) return toast.error('Please Sign In to start negotiating.');
-    if (cart.length === 0) return toast.error('Cart is empty');
-    if (sessionId && sessionStatus === 'ACTIVE') { setShowSessionModal(true); return; }
-    startNegotiation(false);
+  const updateCartQuantity = (id: string, delta: number) => {
+    setCart(prev => prev.map(p => {
+      if (p.id === id) {
+        const nq = p.quantity + delta;
+        if (nq > p.available_stock) { toast.error('Max stock reached'); return p; }
+        return nq > 0 ? { ...p, quantity: nq } : p;
+      }
+      return p;
+    }).filter(p => p.quantity > 0));
   };
 
-  const startNegotiation = async (abandonFirst: boolean) => {
-    setShowSessionModal(false);
-    if (abandonFirst && sessionId && sessionStatus === 'ACTIVE') {
-      try {
-        await fetch(`${API}/api/negotiation/session/${sessionId}/terminate`, {
-          method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ clerk_user_id: user!.id })
-        });
-      } catch (e) {}
-    }
+  const removeFromCart = (id: string) => setCart(prev => prev.filter(p => p.id !== id));
+
+  const cartItemCount = cart.reduce((acc, item) => acc + item.quantity, 0);
+  const cartTotal = cart.reduce((acc, item) => acc + (item.price * item.quantity), 0);
+
+  const startNegotiation = async (forceNew = false) => {
+    if (cart.length === 0) return toast.error('Cart is empty');
+    if (!user) return toast.error('Please Sign In to negotiate');
     setSending(true);
     try {
-      const r = await fetch(`${API}/api/negotiation/start`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ buyer_type: 'HUMAN', cart: cart.map(c => ({ product_id: c.id, quantity: c.quantity })), clerk_user_id: user!.id })
+      const payload = {
+        buyer_type: 'HUMAN',
+        cart: cart.map(i => ({ product_id: i.id, quantity: i.quantity })),
+        clerk_user_id: user.id
+      };
+      
+      let url = `${API}/api/negotiation/start`;
+      let bodyPayload = payload;
+
+      if (!forceNew && sessionId) {
+        url = `${API}/api/negotiation/session/${sessionId}/cart`;
+        bodyPayload = { cart: payload.cart } as any;
+      }
+      
+      const r = await fetch(url, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(bodyPayload)
       });
       const d = await r.json();
-      if (!r.ok) {
-        if (d.out_of_stock_product_id) { setCart(prev => prev.map(c => c.id === d.out_of_stock_product_id ? { ...c, outOfStock: true } : c)); setView('cart'); }
-        throw new Error(d.error);
+      if (!r.ok) throw new Error(d.error || 'Failed to start/update negotiation');
+      
+      if (forceNew || !sessionId) {
+        setSessionId(d.session_id);
+        setSessionStatus(d.status);
+        // Load initial greeting
+        const hr = await fetch(`${API}/api/negotiation/session/${d.session_id}`);
+        const hd = await hr.json();
+        setMessages(hd.session?.messages || []);
+      } else {
+        // If updated cart, just refetch session messages
+        const hr = await fetch(`${API}/api/negotiation/session/${sessionId}`);
+        const hd = await hr.json();
+        setMessages(hd.session?.messages || []);
+        toast.success('Cart updated in negotiation');
       }
-      setSessionId(d.session_id);
-      setSessionStatus('ACTIVE');
+      
+      setFinalPrice(null);
       setRound(0);
-      setMessages([{ role: 'AGENT', content: "Welcome! I can see your cart. Tell me your target price or ask for our best offer and I'll put together a detailed breakdown for you." }]);
       setView('chat');
-      if (user?.id) loadSessionData(user.id);
-    } catch (e: any) {
-      toast.error(`Failed: ${e.message}`);
-    } finally { setSending(false); }
+      setShowSessionModal(false);
+      
+      // Update cart to reflect actual reserved state (out of stock items returned by backend)
+      if (d.out_of_stock_product_id) {
+        setCart(prev => prev.map(p => p.id === d.out_of_stock_product_id ? { ...p, outOfStock: true } : p));
+      }
+
+    } catch (e: any) { toast.error(e.message); }
+    setSending(false);
+  };
+
+  const handleStartOrUpdateClick = () => {
+    if (history.some(h => h.status === 'ACTIVE' || h.status === 'PENDING_MERCHANT_REVIEW')) {
+      setShowSessionModal(true);
+    } else {
+      startNegotiation(true);
+    }
   };
 
   const updateActiveNegotiation = async () => {
-    setShowSessionModal(false);
-    if (!sessionId || cart.length === 0) return;
-    setSending(true);
-    try {
-      const r = await fetch(`${API}/api/negotiation/session/${sessionId}/cart`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ cart: cart.map(c => ({ product_id: c.id, quantity: c.quantity })) })
-      });
-      const d = await r.json();
-      if (!r.ok) {
-        if (d.out_of_stock_product_id) { setCart(prev => prev.map(c => c.id === d.out_of_stock_product_id ? { ...c, outOfStock: true } : c)); setView('cart'); }
-        throw new Error(d.error);
-      }
-      setRound(0);
-      toast.success('Cart synced! The AI will adjust its offer for your new cart.');
-      setView('chat');
-    } catch (e: any) {
-      toast.error(`Failed to update cart: ${e.message}`);
-    } finally { setSending(false); }
+    startNegotiation(false);
   };
 
   const abandonSession = async () => {
-    if (!sessionId || !user) return;
-    setSending(true);
-    const idToAbandon = sessionId;
+    if (!sessionId) return;
     try {
-      await fetch(`${API}/api/negotiation/session/${idToAbandon}/terminate`, {
+      await fetch(`${API}/api/negotiation/session/${sessionId}/terminate`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ clerk_user_id: user.id })
+        body: JSON.stringify({ clerk_user_id: user?.id })
       });
-      // Instantly update history so it doesn't appear ACTIVE in the sidebar
-      setHistory(prev => prev.map(h => h.id === idToAbandon ? { ...h, status: 'TERMINATED', terminated_reason: 'ABANDONED_BY_CUSTOMER' } : h));
-      
-      setSessionId(null); setSessionStatus('ACTIVE'); setMessages([]); setFinalPrice(null); setSessionExpiry(null);
-      setView('search');
-      toast.success('Negotiation abandoned. Stock released.');
-      // Do not call loadSessionData here to avoid loading older active sessions if any exist
-    } catch (e: any) {
+      setSessionStatus('TERMINATED');
+      toast.error('Deal Abandoned');
+      setHistory(prev => prev.map(h => h.id === sessionId ? { ...h, status: 'TERMINATED', terminated_reason: 'ABANDONED_BY_CUSTOMER' } : h));
+      setView('cart');
+    } catch (e) {
       toast.error('Failed to abandon session');
-    } finally { setSending(false); }
+    }
   };
 
   const loadHistoricalSession = async (h: SessionHistory) => {
-    if (h.status === 'ACTIVE' || h.status === 'PENDING_MERCHANT_REVIEW') { setSessionId(h.id); setView('chat'); return; }
+    setSessionId(h.id);
+    setSessionStatus(h.status);
+    setFinalPrice(null);
+    setRound(0);
+    setSessionExpiry(null);
     try {
-      const r = await fetch(`${API}/api/admin/sessions/${h.id}/messages`, {
-        headers: { 'x-merchant-key': process.env.NEXT_PUBLIC_MERCHANT_KEY || '' }
-      });
+      const r = await fetch(`${API}/api/negotiation/session/${h.id}`);
       const d = await r.json();
-      if (r.ok && d.messages) {
-        setSessionId(h.id); setSessionStatus(h.status);
-        setMessages(d.messages.map((m: any) => ({ role: m.role, content: m.content, final_price: m.metadata?.finalOffer || null })));
-        setView('chat');
-      } else { toast.error('Could not load session history'); }
-    } catch (e) { toast.error('Could not load session history'); }
+      if (d.session) {
+        setMessages(d.session.messages || []);
+        if (d.session.status === 'COMPLETED' || d.session.status === 'APPROVED') {
+            const finalMsg = d.session.messages.slice().reverse().find((m:any) => m.final_price != null);
+            if (finalMsg) setFinalPrice(finalMsg.final_price);
+        }
+      }
+      setView('chat');
+    } catch (e) { toast.error('Failed to load session'); }
   };
 
   const sendMessage = async () => {
-    if (!input.trim() || sending) return;
-    const msg = input.trim();
+    if (!input.trim() || !sessionId || sessionStatus !== 'ACTIVE') return;
+    const currentInput = input;
     setInput('');
-    setMessages(prev => [...prev, { role: 'USER', content: msg }]);
+    setMessages(prev => [...prev, { role: 'USER', content: currentInput }]);
     setSending(true);
     try {
       const r = await fetch(`${API}/api/negotiation/chat`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'x-session-id': sessionId! },
-        body: JSON.stringify({ message: msg })
+        method: 'POST', headers: { 'Content-Type': 'application/json', 'x-session-id': sessionId },
+        body: JSON.stringify({ message: currentInput })
       });
       const d = await r.json();
-      if (!r.ok) throw new Error(d.error);
-      setRound(d.round);
-      if (d.status !== 'ACTIVE') setSessionStatus(d.status);
-      if (d.final_price) setFinalPrice(d.final_price);
-      setMessages(prev => [...prev, { role: 'AGENT', content: d.reply, final_price: d.final_price }]);
-    } catch (e: any) {
-      toast.error(`Failed to send: ${e.message}`);
-      setMessages(prev => prev.slice(0, -1));
-    } finally { setSending(false); }
+      if (!r.ok) {
+         if (r.status === 400 && d.error === 'Session is no longer active') {
+             setSessionStatus('TERMINATED');
+             toast.error('Session expired.');
+         } else {
+             throw new Error(d.error || 'Failed to send');
+         }
+      } else {
+          setMessages(prev => [...prev, { role: 'AGENT', content: d.reply, final_price: d.final_price }]);
+          setSessionStatus(d.status);
+          setFinalPrice(d.final_price || null);
+          setRound(d.round || round);
+      }
+    } catch (e: any) { toast.error(e.message); }
+    setSending(false);
   };
 
   const submitCheckout = async () => {
-    if (!phone || !address) return toast.error('Phone and Address are required.');
-    const loadToast = toast.loading('Creating Order...');
+    if (!phone || !address) return toast.error('Fill required fields');
+    if (!sessionId || !finalPrice) return toast.error('Invalid session');
+    
+    const loadToast = toast.loading('Processing payment...');
     try {
       const res = await fetch(`${API}/api/checkout/create-order`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ session_id: sessionId, customer_name: user?.fullName, customer_email: user?.primaryEmailAddress?.emailAddress, customer_phone: phone, shipping_address: address })
+        body: JSON.stringify({ session_id: sessionId, customer_phone: phone, shipping_address: address })
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error);
+
       toast.dismiss(loadToast);
       setShowCheckout(false);
+
       const options = {
-        key: data.key_id, amount: data.amount, currency: data.currency,
-        name: 'Nexus Electronics', description: 'Order Checkout', order_id: data.order_id,
+        key: process.env.NEXT_PUBLIC_RAZORPAY_KEY_ID,
+        amount: data.amount,
+        currency: data.currency,
+        name: "Nexus A2A Commerce",
+        description: `Order for Session ${sessionId.substring(0,8)}`,
+        order_id: data.order_id,
         handler: async function (response: any) {
+          const verifyToast = toast.loading('Verifying payment...');
           const vRes = await fetch(`${API}/api/checkout/verify-payment`, {
             method: 'POST', headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ razorpay_order_id: response.razorpay_order_id, razorpay_payment_id: response.razorpay_payment_id, razorpay_signature: response.razorpay_signature, session_id: sessionId })
+            body: JSON.stringify({ ...response, session_id: sessionId })
           });
           const vData = await vRes.json();
-          if (vRes.ok) { toast.success('Payment Successful! Order Confirmed.'); setSessionStatus('COMPLETED'); setCart([]); localStorage.removeItem('nexus_cart'); }
-          else { toast.error(`Verification Failed: ${vData.error}`); }
+          toast.dismiss(verifyToast);
+          if (vRes.ok) {
+            toast.success('Payment Successful!');
+            setSessionStatus('COMPLETED');
+            setCart([]); 
+          } else {
+            toast.error(vData.error || 'Verification failed');
+          }
         },
-        prefill: { name: user?.fullName || '', email: user?.primaryEmailAddress?.emailAddress || '', contact: phone },
-        theme: { color: '#1E5EDB' },
+        prefill: { name: user?.fullName, email: user?.primaryEmailAddress?.emailAddress, contact: phone },
+        theme: { color: "#0055ff" },
         config: {
           display: {
             blocks: {
-              upi: { name: 'Pay via UPI (Test)', instruments: [{ method: 'upi' }] },
-              card: { name: 'Pay via Card (Test)', instruments: [{ method: 'card' }] }
+              banks: { name: 'Most Used Methods', instruments: [{ method: 'upi' }, { method: 'card' }] },
             },
             sequence: ['block.upi', 'block.card'],
             preferences: { show_default_blocks: true }
@@ -433,344 +445,477 @@ export default function Shop() {
   };
 
   return (
-    <div style={{ minHeight: '100vh', background: 'var(--bg-primary)', display: 'flex', flexDirection: 'column' }}>
-      <Script src="https://checkout.razorpay.com/v1/checkout.js" strategy="lazyOnload" />
-      <Nav active="shop" cartCount={cartItemCount} />
-      {sessionStatus === 'COMPLETED' && <Confetti width={width} height={height} recycle={false} numberOfPieces={500} />}
-      <div style={{ flex: 1, display: 'flex', overflow: 'hidden' }}>
-        {/* SIDEBAR */}
-        <div style={{ width: '280px', background: 'var(--bg-secondary)', borderRight: '1px solid var(--border)', display: 'flex', flexDirection: 'column', overflowY: 'auto' }}>
-          <div style={{ padding: '20px' }}>
-            <h3 style={{ fontSize: '1rem', fontWeight: 700, marginBottom: '16px' }}>Chat History</h3>
-            
-            <div style={{ display: 'flex', gap: '4px', marginBottom: '16px', overflowX: 'auto', paddingBottom: '4px' }}>
-              {(['ALL', 'ACTIVE', 'REVIEW', 'CLOSED'] as const).map(f => (
-                <button key={f} onClick={() => setHistoryFilter(f)} 
-                  className={`btn btn-sm ${historyFilter === f ? 'btn-primary' : ''}`}
-                  style={{ padding: '4px 10px', fontSize: '0.7rem', flexShrink: 0, background: historyFilter === f ? 'var(--cobalt)' : 'transparent', color: historyFilter === f ? 'white' : 'var(--text-secondary)', border: historyFilter === f ? 'none' : '1px solid var(--border)' }}>
-                  {f}
-                </button>
-              ))}
-            </div>
+    <>
+      {/* 3D Background */}
+      <canvas ref={canvasRef} className="webgl"></canvas>
+      
+      {/* Overlay Content */}
+      <div className="shop-overlay-content">
+        <Script src="https://checkout.razorpay.com/v1/checkout.js" strategy="lazyOnload" />
+        {sessionStatus === 'COMPLETED' && <Confetti width={width} height={height} recycle={false} numberOfPieces={500} />}
+        
+        {/* ── Top Navbar ─────────────────────────────────────────── */}
+        <nav className="tbl-navbar" style={{ background: 'rgba(255, 255, 255, 0.1)', backdropFilter: 'blur(20px)', borderBottom: '1px solid rgba(255, 255, 255, 0.15)' }}>
+          <div className="tbl-container-inner">
+              <a className="tbl-navbar-brand" href="/" style={{ fontFamily: 'Inter, sans-serif' }}>
+              <svg viewBox="0 0 32 32" fill="none" xmlns="http://www.w3.org/2000/svg">
+                  <rect width="32" height="32" rx="8" fill="#616161" />
+                  <path d="M10 16L16 10L22 16" stroke="#fff" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+              </svg>
+              Nexus A2A
+              </a>
+              <div className="tbl-navbar-actions">
+              <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', paddingLeft: '1rem', marginLeft: '0.5rem' }}>
+                  {user ? (
+                      <>
+                      <div style={{ textAlign: 'right' }}>
+                          <div style={{ fontSize: '0.9rem', fontWeight: 600, color: '#616161' }}>{user.firstName || 'Customer'}</div>
+                          <div style={{ fontSize: '0.8rem', color: '#616161' }}>{user.primaryEmailAddress?.emailAddress}</div>
+                      </div>
+                      <img src={user.imageUrl} alt="Profile" className="tbl-avatar" />
+                      <button className="tbl-btn" style={{ marginLeft: '1rem', borderColor: '#d63939', color: '#d63939' }} onClick={() => signOut(() => router.push('/'))}>
+                          Sign out
+                      </button>
+                      </>
+                  ) : (
+                      <div style={{ fontSize: '0.9rem', color: '#616161' }}>Guest User</div>
+                  )}
+              </div>
+              </div>
+          </div>
+        </nav>
 
-            {history.filter(h => {
-              if (historyFilter === 'ACTIVE') return h.status === 'ACTIVE';
-              if (historyFilter === 'REVIEW') return h.status === 'PENDING_MERCHANT_REVIEW';
-              if (historyFilter === 'CLOSED') return ['APPROVED', 'COMPLETED', 'TERMINATED'].includes(h.status);
-              return true;
-            }).length === 0 ? (
-              <div style={{ textAlign: 'center', padding: '40px 0', color: 'var(--text-muted)' }}>
-                <div style={{ fontSize: '2rem', marginBottom: '8px' }}>💬</div>
-                <div style={{ fontSize: '0.85rem' }}>No past negotiations.</div>
+        {/* ── Sub Navbar ─────────────────────────────────────────── */}
+        <div className="tbl-subnav" style={{ background: 'rgba(255, 255, 255, 0.1)', backdropFilter: 'blur(10px)', borderBottom: '1px solid rgba(255, 255, 255, 0.15)' }}>
+          <div className="tbl-container-inner">
+              <div style={{ display: 'flex' }}>
+              <a href="#" className={view === 'search' ? 'active' : ''} onClick={(e) => { e.preventDefault(); setView('search'); }}>
+                  <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"></path><polyline points="9 22 9 12 15 12 15 22"></polyline></svg>
+                  Search Catalog
+              </a>
+              <a href="#" className={view === 'cart' ? 'active' : ''} onClick={(e) => { e.preventDefault(); setView('cart'); }}>
+                  <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="9" cy="21" r="1"></circle><circle cx="20" cy="21" r="1"></circle><path d="M1 1h4l2.68 13.39a2 2 0 0 0 2 1.61h9.72a2 2 0 0 0 2-1.61L23 6H6"></path></svg>
+                  View Cart
+                  {cartItemCount > 0 && <span className="tbl-badge-new">{cartItemCount > 9 ? '9+' : cartItemCount}</span>}
+              </a>
+              <a href="#" className={view === 'history' ? 'active' : ''} onClick={(e) => { e.preventDefault(); setView('history'); }}>
+                  <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 8v4l3 3"></path><circle cx="12" cy="12" r="10"></circle></svg>
+                  Session History
+              </a>
+              {sessionId && (
+                  <a href="#" className={view === 'chat' ? 'active' : ''} onClick={(e) => { e.preventDefault(); setView('chat'); }}>
+                      <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path></svg>
+                      Active Chat
+                  </a>
+              )}
               </div>
-            ) : (
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-                {history.filter(h => {
-                  if (historyFilter === 'ACTIVE') return h.status === 'ACTIVE';
-                  if (historyFilter === 'REVIEW') return h.status === 'PENDING_MERCHANT_REVIEW';
-                  if (historyFilter === 'CLOSED') return ['APPROVED', 'COMPLETED', 'TERMINATED'].includes(h.status);
-                  return true;
-                }).map(h => (
-                  <div key={h.id} onClick={() => loadHistoricalSession(h)}
-                    style={{ padding: '12px', background: sessionId === h.id ? 'var(--bg-primary)' : 'transparent', border: sessionId === h.id ? '1px solid var(--border)' : '1px solid transparent', borderRadius: '8px', cursor: 'pointer', transition: 'all 0.2s' }}>
-                    <div style={{ fontSize: '0.85rem', fontWeight: 600, color: 'var(--text-primary)', marginBottom: '4px' }}>{formatCurrency(h.cart_total)}</div>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                      <span style={{ fontSize: '0.75rem', color: 'var(--text-secondary)' }}>{timeAgo(h.created_at)}</span>
-                      <span style={{ fontSize: '0.65rem', padding: '2px 6px', borderRadius: '4px', background: h.status === 'COMPLETED' ? 'var(--success-bg)' : h.status === 'ACTIVE' ? 'var(--cobalt-light)' : 'var(--bg-primary)', color: h.status === 'COMPLETED' ? 'var(--success)' : h.status === 'ACTIVE' ? 'var(--cobalt)' : 'var(--text-muted)' }}>
-                        {h.status === 'TERMINATED' && h.terminated_reason === 'ABANDONED_BY_CUSTOMER' ? 'ABANDONED' : h.status.replace(/_/g, ' ')}
-                      </span>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            )}
           </div>
         </div>
 
-        {/* MAIN CONTENT */}
-        <div style={{ flex: 1, padding: '32px 40px', overflowY: 'auto' }}>
-          <div style={{ display: 'flex', gap: '12px', marginBottom: '24px', alignItems: 'center' }}>
-            <button className={`btn ${view === 'search' ? 'btn-primary' : 'btn-secondary'} btn-sm`} onClick={() => setView('search')}>Search Catalog</button>
-            <button className={`btn ${view === 'cart' ? 'btn-primary' : 'btn-secondary'} btn-sm`} onClick={() => setView('cart')} style={{ position: 'relative' }}>
-              View Cart
-              {cartItemCount > 0 && (
-                <span style={{ position: 'absolute', top: '-8px', right: '-8px', background: 'var(--cobalt)', color: 'white', borderRadius: '50%', width: '20px', height: '20px', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '0.7rem', fontWeight: 700 }}>
-                  {cartItemCount > 99 ? '99+' : cartItemCount}
-                </span>
-              )}
-            </button>
-            {sessionId && (
-              <button className={`btn ${view === 'chat' ? 'btn-primary' : 'btn-secondary'} btn-sm`} onClick={() => setView('chat')}>
-                {sessionStatus === 'ACTIVE' ? 'Active Negotiation' : sessionStatus === 'PENDING_MERCHANT_REVIEW' ? 'Pending Review' : 'Session View'}
-              </button>
-            )}
-          </div>
-
-          <div style={{ maxWidth: '800px', margin: '0 auto' }}>
-            {/* SEARCH VIEW */}
-            {view === 'search' && (
-              <div>
-                <form onSubmit={e => { e.preventDefault(); handleSearch(); }} style={{ display: 'flex', gap: '10px', marginBottom: '16px' }}>
-                  <input className="input" placeholder='Try "Gaming laptop under 1,50,000"' value={query} onChange={e => setQuery(e.target.value)} style={{ fontSize: '1rem', padding: '14px 18px' }} />
-                  <button className="btn btn-primary btn-lg" type="submit" disabled={searching}>{searching ? 'Searching...' : 'Search'}</button>
-                </form>
-                {products.length === 0 && !searching && (
-                  <div style={{ marginBottom: '28px' }}>
-                    <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)', marginBottom: '10px' }}>Try searching for:</div>
-                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px' }}>
-                      {EXAMPLE_QUERIES.map(q => (
-                        <button key={q} className="btn btn-secondary btn-sm" onClick={() => { setQuery(q); handleSearch(q); }} style={{ fontSize: '0.8rem' }}>{q}</button>
-                      ))}
+        {/* ── Main Container ─────────────────────────────────────── */}
+        <div className="tbl-container" style={{ marginTop: '2.5rem', marginBottom: '5rem' }}>
+          
+          {/* Welcome Dashboard Header */}
+          {view === 'search' && (
+            <div className="glass-card" style={{ display: 'flex', marginBottom: '2.5rem', padding: 0 }}>
+              <div style={{ flex: '1 1 50%', padding: '2.5rem' }}>
+                <div style={{ display: 'flex', flexDirection: 'column', height: '100%', justifyContent: 'space-between' }}>
+                  <div>
+                    <h2 style={{ fontSize: '1.8rem', fontWeight: 700, color: '#616161', marginBottom: '0.5rem', fontFamily: 'Inter, sans-serif' }}>
+                      Welcome back, {user?.firstName || 'Customer'}
+                    </h2>
+                    <p style={{ color: '#616161', fontSize: '1.05rem', maxWidth: '400px' }}>
+                      Browse our premium catalog, add items to your cart, and negotiate the best price with our AI Agent.
+                    </p>
+                  </div>
+                  
+                  <div style={{ display: 'flex', gap: '3rem', marginTop: '2rem' }}>
+                    <div className="tbl-stat-mini" style={{ background: 'transparent', padding: 0, border: 'none' }}>
+                      <label style={{ fontSize: '0.75rem', fontWeight: 700, color: '#616161', textTransform: 'uppercase' }}>Cart Value</label>
+                      <div className="value-row">
+                        <span className="num" style={{ fontSize: '1.4rem' }}>{formatCurrency(cartTotal)}</span>
+                      </div>
+                    </div>
+                    <div className="tbl-stat-mini" style={{ background: 'transparent', padding: 0, border: 'none' }}>
+                      <label style={{ fontSize: '0.75rem', fontWeight: 700, color: '#616161', textTransform: 'uppercase' }}>Past Deals</label>
+                      <div className="value-row">
+                        <span className="num" style={{ fontSize: '1.4rem' }}>{history.filter(h => h.status === 'COMPLETED').length}</span>
+                      </div>
                     </div>
                   </div>
-                )}
-                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(260px, 1fr))', gap: '16px' }}>
-                  {products.map(p => {
-                    const { gradient, icon } = getCategoryStyle(p.category);
-                    const inCartQty = cart.find(c => c.id === p.id)?.quantity || 0;
-                    return (
-                      <div key={p.id} className="product-card">
-                        <div style={{ height: '140px', background: gradient, borderRadius: '8px', marginBottom: '12px', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '3rem' }}>{icon}</div>
-                        <div style={{ marginBottom: '8px' }}>
-                          <span className="badge badge-muted" style={{ marginBottom: '10px' }}>{p.category}</span>
-                          <h3 style={{ fontSize: '0.95rem', fontWeight: '600', marginBottom: '4px', lineHeight: 1.3 }}>{p.name}</h3>
-                          <p style={{ fontSize: '0.8rem', color: 'var(--text-secondary)', lineHeight: 1.4 }}>{p.description.substring(0, 80)}...</p>
-                        </div>
-                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: '12px' }}>
+                </div>
+              </div>
+              <div style={{ flex: '1 1 50%', display: 'flex', alignItems: 'center', justifyContent: 'center', borderLeft: '1px solid rgba(255, 255, 255, 0.15)' }}>
+                <img src="/welcome-icon.jpg" alt="Welcome" style={{ width: '100%', maxWidth: '280px', height: 'auto', objectFit: 'contain', mixBlendMode: 'multiply' }} />
+              </div>
+            </div>
+          )}
+
+          {/* SEARCH VIEW */}
+          {view === 'search' && (
+            <div>
+              <form onSubmit={e => { e.preventDefault(); handleSearch(); }} className="glass-search-bar">
+                <input className="glass-search-input" placeholder='Try "Gaming laptop under 1,50,000"' value={query} onChange={e => setQuery(e.target.value)} />
+                <button className="tbl-btn tbl-btn-primary" type="submit" disabled={searching} style={{ padding: '10px 24px', fontSize: '1.05rem', borderRadius: '100px' }}>
+                  {searching ? 'Searching...' : 'Search Catalog'}
+                </button>
+              </form>
+              
+              {products.length === 0 && !searching && (
+                <div style={{ marginBottom: '28px', textAlign: 'center' }}>
+                  <div style={{ fontSize: '0.9rem', color: '#616161', marginBottom: '16px', fontWeight: 600 }}>Suggested Searches:</div>
+                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px', justifyContent: 'center' }}>
+                    {EXAMPLE_QUERIES.map(q => (
+                      <button key={q} className="glass-card" onClick={() => { setQuery(q); handleSearch(q); }} style={{ padding: '8px 16px', fontSize: '0.85rem', cursor: 'pointer', border: 'none', color: '#616161', fontWeight: 600 }}>{q}</button>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              <div className="grid-4-col">
+                {products.map(p => {
+                  const { gradient, icon } = getCategoryStyle(p.category);
+                  const inCartQty = cart.find(c => c.id === p.id)?.quantity || 0;
+                  return (
+                    <div key={p.id} className="glass-card tbl-card" style={{ marginBottom: 0 }}>
+                      <div style={{ height: '160px', background: gradient, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '4rem', opacity: 0.8 }}>{icon}</div>
+                      <div className="tbl-card-body">
+                        <span className="tbl-badge tbl-badge-secondary" style={{ marginBottom: '12px' }}>{p.category}</span>
+                        <h3 style={{ fontSize: '1.05rem', fontWeight: '700', marginBottom: '6px', lineHeight: 1.3, color: '#616161' }}>{p.name}</h3>
+                        <p style={{ fontSize: '0.85rem', color: '#616161', lineHeight: 1.5, minHeight: '40px' }}>{p.description.substring(0, 75)}...</p>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: '20px' }}>
                           <div>
-                            <div style={{ fontWeight: '700', fontSize: '1.05rem' }}>{formatCurrency(p.price)}</div>
-                            <div style={{ fontSize: '0.75rem', color: p.available_stock > 0 ? 'var(--success)' : 'var(--danger)' }}>{p.available_stock > 0 ? `${p.available_stock} in stock` : 'Out of stock'}</div>
+                            <div style={{ fontWeight: '800', fontSize: '1.15rem', color: '#616161' }}>{formatCurrency(p.price)}</div>
+                            <div style={{ fontSize: '0.75rem', color: p.available_stock > 0 ? '#2fb344' : '#d63939' }}>{p.available_stock > 0 ? `${p.available_stock} available` : 'Out of stock'}</div>
                           </div>
-                          <button className={`btn btn-sm ${inCartQty > 0 ? 'btn-secondary' : 'btn-primary'}`} disabled={p.available_stock <= 0} onClick={() => addToCart(p)}>
-                            {inCartQty > 0 ? `In Cart (${inCartQty}) +` : 'Add'}
+                          <button className={`tbl-btn tbl-btn-sm ${inCartQty > 0 ? 'tbl-btn-secondary' : 'tbl-btn-primary'}`} disabled={p.available_stock <= 0} onClick={() => addToCart(p)}>
+                            {inCartQty > 0 ? `In Cart (${inCartQty}) +` : 'Add to Cart'}
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
+          {/* CART VIEW */}
+          {view === 'cart' && (
+            <div>
+              <div className="glass-card" style={{ padding: '2rem', marginBottom: '2rem', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <div>
+                  <h2 style={{ fontSize: '1.5rem', fontWeight: 700, color: '#616161', marginBottom: '4px' }}>Ready to Negotiate?</h2>
+                  <p style={{ color: '#616161', margin: 0 }}>Review your items and start the AI negotiation process to get the best deal.</p>
+                </div>
+                <div style={{ textAlign: 'right' }}>
+                  <div style={{ fontSize: '0.85rem', color: '#616161', textTransform: 'uppercase', fontWeight: 600 }}>Total Value</div>
+                  <div style={{ fontSize: '2rem', fontWeight: 800, color: '#616161' }}>{formatCurrency(cartTotal)}</div>
+                </div>
+                <button className="tbl-btn tbl-btn-primary" onClick={handleStartOrUpdateClick} disabled={sending || cart.length === 0} style={{ padding: '12px 24px', fontSize: '1.1rem' }}>
+                  {sending ? 'Starting...' : 'Start Negotiation'}
+                </button>
+              </div>
+
+              {cart.length === 0 ? (
+                <div className="glass-card" style={{ textAlign: 'center', padding: '80px 0', color: '#616161' }}>
+                  <div style={{ fontSize: '4rem', marginBottom: '16px' }}>🛒</div>
+                  <div style={{ fontSize: '1.1rem' }}>Your cart is empty.</div>
+                  <button className="tbl-btn tbl-btn-primary" style={{ marginTop: '24px' }} onClick={() => setView('search')}>Browse Products</button>
+                </div>
+              ) : (
+                <div className="grid-4-col">
+                  {cart.map(item => {
+                    const { gradient, icon } = getCategoryStyle(item.category);
+                    return (
+                      <div key={item.id} className="glass-card tbl-card" style={{ opacity: item.outOfStock ? 0.6 : 1, marginBottom: 0 }}>
+                        <div style={{ height: '120px', background: gradient, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '3rem', position: 'relative', opacity: 0.8 }}>
+                          {icon}
+                          {item.outOfStock && (
+                            <span className="tbl-badge tbl-badge-danger" style={{ position: 'absolute', top: '10px', right: '10px', padding: '4px 8px', fontSize: '0.7rem' }}>OUT OF STOCK</span>
+                          )}
+                        </div>
+                        <div className="tbl-card-body">
+                          <h3 style={{ fontSize: '0.95rem', fontWeight: '700', marginBottom: '4px', color: '#616161', lineHeight: 1.3 }}>{item.name}</h3>
+                          <div style={{ fontSize: '0.85rem', color: '#616161', marginBottom: '16px' }}>{formatCurrency(item.price)} each</div>
+                          
+                          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', background: 'rgba(0,0,0,0.05)', padding: '4px 8px', borderRadius: '6px' }}>
+                              <button style={{ border: 'none', background: 'transparent', cursor: 'pointer', fontWeight: 'bold', color: '#616161' }} onClick={() => updateCartQuantity(item.id, -1)}>-</button>
+                              <span style={{ fontSize: '0.95rem', fontWeight: 700, minWidth: '24px', textAlign: 'center', color: '#616161' }}>{item.quantity}</span>
+                              <button style={{ border: 'none', background: 'transparent', cursor: 'pointer', fontWeight: 'bold', color: '#616161' }} onClick={() => updateCartQuantity(item.id, 1)}>+</button>
+                            </div>
+                            <div style={{ fontWeight: '800', fontSize: '1.1rem', color: '#616161' }}>
+                              {formatCurrency(item.price * item.quantity)}
+                            </div>
+                          </div>
+                          <button className="tbl-btn tbl-btn-secondary" style={{ width: '100%', marginTop: '16px', color: '#616161', border: '1px solid rgba(214, 57, 57, 0.2)', background: 'rgba(214, 57, 57, 0.05)' }} onClick={() => removeFromCart(item.id)}>
+                            Remove Item
                           </button>
                         </div>
                       </div>
                     );
                   })}
                 </div>
-              </div>
-            )}
+              )}
+            </div>
+          )}
 
-            {/* CART VIEW */}
-            {view === 'cart' && (
-              <div>
-                <h2 style={{ fontSize: '1.3rem', fontWeight: '700', marginBottom: '24px' }}>Your Cart</h2>
-                {cart.length === 0 ? (
-                  <div style={{ textAlign: 'center', padding: '60px 0', color: 'var(--text-muted)' }}>
-                    <div style={{ fontSize: '3rem', marginBottom: '12px' }}>🛒</div>
-                    <div>Your cart is empty.</div>
-                    <button className="btn btn-primary btn-sm" style={{ marginTop: '16px' }} onClick={() => setView('search')}>Browse Products</button>
-                  </div>
-                ) : (
-                  <>
-                    {cart.map(item => (
-                      <div key={item.id} className="card" style={{ marginBottom: '12px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '16px 20px', border: item.outOfStock ? '1px solid #ef4444' : undefined, opacity: item.outOfStock ? 0.6 : 1 }}>
-                        <div>
-                          <div style={{ fontWeight: 600, color: item.outOfStock ? '#ef4444' : 'inherit' }}>
-                            {item.name}
-                            {item.outOfStock && <span style={{ fontSize: '0.7rem', marginLeft: '8px', padding: '2px 7px', background: '#ef4444', color: 'white', borderRadius: '4px', verticalAlign: 'middle' }}>OUT OF STOCK</span>}
-                          </div>
-                          <div style={{ fontSize: '0.85rem', color: 'var(--text-secondary)' }}>{formatCurrency(item.price)} each</div>
-                        </div>
-                        <div style={{ display: 'flex', alignItems: 'center', gap: '24px' }}>
-                          <div style={{ display: 'flex', alignItems: 'center', gap: '12px', background: 'var(--bg-secondary)', padding: '4px 10px', borderRadius: '8px' }}>
-                            <button style={{ border: 'none', background: 'transparent', cursor: 'pointer', fontWeight: 'bold', fontSize: '1.1rem' }} onClick={() => updateCartQuantity(item.id, -1)}>-</button>
-                            <span style={{ fontSize: '0.9rem', fontWeight: 600, minWidth: '24px', textAlign: 'center' }}>{item.quantity}</span>
-                            <button style={{ border: 'none', background: 'transparent', cursor: 'pointer', fontWeight: 'bold', fontSize: '1.1rem' }} onClick={() => updateCartQuantity(item.id, 1)}>+</button>
-                          </div>
-                          <span style={{ fontWeight: '700', fontSize: '1.05rem', minWidth: '90px', textAlign: 'right' }}>{formatCurrency(item.price * item.quantity)}</span>
-                          <button className="btn btn-danger btn-sm" onClick={() => removeFromCart(item.id)}>x</button>
-                        </div>
-                      </div>
-                    ))}
-                    <div className="card" style={{ marginTop: '16px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                      <div>
-                        <div style={{ fontSize: '0.85rem', color: 'var(--text-secondary)' }}>Total before negotiation</div>
-                        <div style={{ fontSize: '1.5rem', fontWeight: '700' }}>{formatCurrency(cartTotal)}</div>
-                      </div>
-                      <button className="btn btn-primary btn-lg" onClick={handleStartOrUpdateClick} disabled={sending}>
-                        {sending ? 'Starting...' : 'Start Negotiating'}
-                      </button>
-                    </div>
-                  </>
-                )}
-              </div>
-            )}
-
-            {/* CHAT VIEW */}
-            {view === 'chat' && (
-              <div style={{ display: 'flex', flexDirection: 'column', height: 'calc(100vh - 180px)' }}>
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '16px' }}>
-                  <div>
-                    <h2 style={{ fontSize: '1.2rem', fontWeight: '700' }}>
-                      {['ACTIVE', 'PENDING_MERCHANT_REVIEW'].includes(sessionStatus) ? 'Negotiate Your Deal' : 'Session History (Read-Only)'}
-                    </h2>
-                    <p style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', marginTop: '2px' }}>
-                      {sessionStatus === 'ACTIVE' && round > 0 && `Round ${round} of ${maxRounds} - `}
-                      Original: {formatCurrency(cartTotal)}
-                      {timeLeft && sessionStatus === 'ACTIVE' && (
-                        <span style={{ marginLeft: '10px', color: timeLeft.startsWith('0:') ? '#ef4444' : 'var(--text-muted)' }}> | {timeLeft} remaining</span>
-                      )}
-                    </p>
-                  </div>
-                  <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
-                    {sessionStatus !== 'ACTIVE' && (
-                      <span className={`badge ${sessionStatus === 'PENDING_MERCHANT_REVIEW' ? 'badge-warning' : sessionStatus === 'APPROVED' ? 'badge-success' : 'badge-danger'}`}>
-                        {sessionStatus === 'TERMINATED' && history.find(h => h.id === sessionId)?.terminated_reason === 'ABANDONED_BY_CUSTOMER' ? 'ABANDONED' : sessionStatus.replace(/_/g, ' ')}
-                      </span>
-                    )}
-                    {sessionStatus === 'ACTIVE' && (
-                      <button className="btn btn-secondary btn-sm" onClick={() => setShowAbandonModal(true)}>Abandon</button>
-                    )}
-                  </div>
+          {/* HISTORY VIEW */}
+          {view === 'history' && (
+            <div className="glass-card tbl-card">
+              <div className="tbl-card-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <h3 className="tbl-card-title">Session History</h3>
+                <div style={{ display: 'flex', gap: '8px' }}>
+                  {(['ALL', 'ACTIVE', 'REVIEW', 'CLOSED'] as const).map(f => (
+                    <button key={f} onClick={() => setHistoryFilter(f)} 
+                      className={`tbl-btn tbl-btn-sm ${historyFilter === f ? 'tbl-btn-primary' : 'tbl-btn-secondary'}`}>
+                      {f}
+                    </button>
+                  ))}
                 </div>
-                <div className="chat-container" style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
-                  <div className="chat-messages" style={{ flex: 1, overflowY: 'auto' }}>
-                    {messages.filter(m => m.role !== 'SYSTEM').map((m, i) => (
-                      <div key={i} className={`chat-bubble ${m.role === 'USER' ? 'chat-bubble-user' : 'chat-bubble-agent'}`} style={m.role === 'MERCHANT' ? { border: '1px solid var(--warning)', background: 'var(--warning-bg)' } : {}}>
-                        {m.role === 'MERCHANT' && (
-                          <div style={{ fontSize: '0.7rem', fontWeight: 700, color: 'var(--warning)', marginBottom: '6px', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Merchant</div>
-                        )}
-                        <div className="markdown-body"><ReactMarkdown>{m.content}</ReactMarkdown></div>
+              </div>
+              
+              <div className="tbl-table-responsive">
+                <table className="tbl-table tbl-table-vcenter" style={{ background: 'transparent' }}>
+                  <thead>
+                    <tr>
+                      <th>Date</th>
+                      <th>Session ID</th>
+                      <th>Cart Value</th>
+                      <th>Status</th>
+                      <th>Action</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {history.filter(h => {
+                      if (historyFilter === 'ACTIVE') return h.status === 'ACTIVE';
+                      if (historyFilter === 'REVIEW') return h.status === 'PENDING_MERCHANT_REVIEW';
+                      if (historyFilter === 'CLOSED') return ['APPROVED', 'COMPLETED', 'TERMINATED'].includes(h.status);
+                      return true;
+                    }).length === 0 ? (
+                      <tr><td colSpan={5} style={{ textAlign: 'center', padding: '40px', color: '#62778d' }}>No past negotiations found.</td></tr>
+                    ) : history.filter(h => {
+                      if (historyFilter === 'ACTIVE') return h.status === 'ACTIVE';
+                      if (historyFilter === 'REVIEW') return h.status === 'PENDING_MERCHANT_REVIEW';
+                      if (historyFilter === 'CLOSED') return ['APPROVED', 'COMPLETED', 'TERMINATED'].includes(h.status);
+                      return true;
+                    }).map(h => (
+                      <tr key={h.id}>
+                        <td style={{ color: '#62778d', fontSize: '0.85rem' }}>{timeAgo(h.created_at)}</td>
+                        <td style={{ fontFamily: 'monospace', fontSize: '0.85rem' }}>{h.id.substring(0, 12)}</td>
+                        <td style={{ fontWeight: 600 }}>{formatCurrency(h.cart_total)}</td>
+                        <td>
+                          <span className={`tbl-badge ${h.status === 'COMPLETED' ? 'tbl-badge-success' : h.status === 'ACTIVE' ? 'tbl-badge-primary' : 'tbl-badge-secondary'}`}>
+                            {h.status === 'TERMINATED' && h.terminated_reason === 'ABANDONED_BY_CUSTOMER' ? 'ABANDONED' : h.status.replace(/_/g, ' ')}
+                          </span>
+                        </td>
+                        <td>
+                          <button className="tbl-btn tbl-btn-sm tbl-btn-secondary" onClick={() => loadHistoricalSession(h)}>
+                            View Details
+                          </button>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
+
+        </div>
+
+        {/* Chat Modal Overlay */}
+        {view === 'chat' && (
+          <div style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, background: 'rgba(24, 36, 51, 0.25)', backdropFilter: 'blur(4px)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 50 }}>
+            <div className="tbl-card" style={{ width: '100%', maxWidth: '800px', height: '80vh', display: 'flex', flexDirection: 'column', margin: '20px', background: '#ffffff' }}>
+              <div className="tbl-card-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', background: 'rgba(255, 255, 255, 0.5)' }}>
+                <div>
+                  <h3 className="tbl-card-title" style={{ fontSize: '1.2rem', fontWeight: '700' }}>
+                    {['ACTIVE', 'PENDING_MERCHANT_REVIEW'].includes(sessionStatus) ? 'Negotiate Your Deal' : 'Session History (Read-Only)'}
+                  </h3>
+                  <p style={{ fontSize: '0.85rem', color: '#62778d', marginTop: '2px', marginBottom: 0 }}>
+                    {sessionStatus === 'ACTIVE' && round > 0 && `Round ${round} of ${maxRounds} - `}
+                    Original: {formatCurrency(cartTotal)}
+                    {timeLeft && sessionStatus === 'ACTIVE' && (
+                      <span style={{ marginLeft: '10px', color: timeLeft.startsWith('0:') ? '#d63939' : '#62778d' }}> | {timeLeft} remaining</span>
+                    )}
+                  </p>
+                </div>
+                <div style={{ display: 'flex', gap: '12px', alignItems: 'center' }}>
+                  {sessionStatus !== 'ACTIVE' && (
+                    <span className={`tbl-badge ${sessionStatus === 'PENDING_MERCHANT_REVIEW' ? 'tbl-badge-warning' : sessionStatus === 'APPROVED' ? 'tbl-badge-success' : 'tbl-badge-secondary'}`}>
+                      {sessionStatus === 'TERMINATED' && history.find(h => h.id === sessionId)?.terminated_reason === 'ABANDONED_BY_CUSTOMER' ? 'ABANDONED' : sessionStatus.replace(/_/g, ' ')}
+                    </span>
+                  )}
+                  {sessionStatus === 'ACTIVE' && (
+                    <button className="tbl-btn tbl-btn-secondary tbl-btn-sm" onClick={() => setShowAbandonModal(true)} style={{ color: '#d63939', borderColor: '#d63939' }}>Abandon</button>
+                  )}
+                  <button className="tbl-btn tbl-btn-secondary tbl-btn-sm" onClick={() => {
+                    if (sessionStatus !== 'ACTIVE' && sessionStatus !== 'PENDING_MERCHANT_REVIEW') {
+                      setSessionId(null); setSessionStatus('ACTIVE'); setMessages([]); setView('history');
+                    } else {
+                      setView('history');
+                    }
+                  }} style={{ background: 'transparent', border: 'none', fontSize: '1.2rem', padding: '4px 8px' }}>✕</button>
+                </div>
+              </div>
+
+              <div className="chat-container" style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden', padding: '16px' }}>
+                <div className="chat-messages" style={{ flex: 1, overflowY: 'auto', paddingRight: '8px', display: 'flex', flexDirection: 'column', gap: '12px' }}>
+                  {messages.map((m, i) => {
+                    const isUser = m.role === 'USER';
+                    const isSystem = m.role === 'SYSTEM';
+                    return (
+                      <div key={i} style={{ 
+                          padding: '1rem', 
+                          borderRadius: '12px', 
+                          maxWidth: '75%', 
+                          alignSelf: isSystem ? 'center' : (isUser ? 'flex-end' : 'flex-start'),
+                          background: isSystem ? 'transparent' : (isUser ? '#0055ff' : 'rgba(255, 255, 255, 0.85)'),
+                          color: isSystem ? '#a3a3a3' : (isUser ? '#fff' : '#182433'),
+                          border: isSystem ? 'none' : (isUser ? 'none' : '1px solid rgba(255,255,255,0.3)'),
+                          textAlign: isSystem ? 'center' : 'left',
+                          boxShadow: isUser ? '0 4px 12px rgba(0,85,255,0.2)' : '0 4px 12px rgba(0,0,0,0.05)'
+                      }}>
+                        <div style={{ fontSize: '0.7rem', opacity: 0.7, marginBottom: '0.25rem', textTransform: 'uppercase', fontWeight: 600 }}>{m.role === 'AGENT' ? 'AI Agent' : m.role}</div>
+                        <div className="markdown-body" style={{ fontSize: '0.95rem' }}><ReactMarkdown>{m.content}</ReactMarkdown></div>
                         {m.final_price && m.role === 'AGENT' && (
-                          <div style={{ marginTop: '10px', padding: '8px 12px', background: 'rgba(30, 94, 219, 0.1)', borderRadius: '8px', fontWeight: '600', color: 'var(--cobalt)' }}>
-                            Final Offer: {formatCurrency(m.final_price)}
+                          <div style={{ marginTop: '0.75rem', padding: '0.5rem 0.75rem', background: 'rgba(0, 85, 255, 0.1)', borderRadius: '4px', fontSize: '0.85rem' }}>
+                            <strong style={{ color: '#0055ff' }}>Final Offer: {formatCurrency(m.final_price)}</strong>
                           </div>
                         )}
                       </div>
-                    ))}
-                    {sending && (
-                      <div className="chat-bubble chat-bubble-agent" style={{ width: 'fit-content' }}>
-                        <span className="typing-dot"></span>
-                        <span className="typing-dot" style={{ animationDelay: '0.2s' }}></span>
-                        <span className="typing-dot" style={{ animationDelay: '0.4s' }}></span>
-                      </div>
-                    )}
-                    <div ref={bottomRef} style={{ height: '1px' }} />
-                  </div>
-                  {sessionStatus === 'ACTIVE' ? (
-                    <div className="chat-input-row" style={{ marginTop: '16px', background: 'var(--bg-secondary)', padding: '12px', borderRadius: '12px', display: 'flex', gap: '12px', alignItems: 'flex-end' }}>
-                      <textarea className="input" placeholder="Make your offer... (Enter to send)" value={input} onChange={e => setInput(e.target.value)} onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(); } }} disabled={sending} style={{ flex: 1, minHeight: '44px', maxHeight: '120px', resize: 'none', padding: '10px 14px' }} rows={1} />
-                      <button className="btn btn-primary" onClick={sendMessage} disabled={sending || !input.trim()} style={{ height: '44px' }}>Send</button>
-                    </div>
-                  ) : sessionStatus === 'PENDING_MERCHANT_REVIEW' ? (
-                    <div style={{ padding: '16px 20px', background: 'var(--warning-bg)', textAlign: 'center', borderRadius: '8px', marginTop: '16px', fontSize: '0.9rem', color: 'var(--warning)' }}>
-                      Your deal is under merchant review. Please wait...
-                    </div>
-                  ) : sessionStatus === 'APPROVED' && finalPrice ? (
-                    <div style={{ padding: '20px', marginTop: '16px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', background: 'var(--success-bg)', borderRadius: '12px' }}>
-                      <div>
-                        <div style={{ fontWeight: '700', color: 'var(--success)', fontSize: '1.2rem', marginBottom: '4px' }}>Deal Approved!</div>
-                        <div style={{ fontSize: '0.9rem', color: 'var(--text-secondary)' }}>Final price: {formatCurrency(finalPrice)}</div>
-                      </div>
-                      <button className="btn btn-success btn-lg" onClick={() => { if (!user) return toast.error('Please Sign In'); setShowCheckout(true); }}>Proceed to Pay</button>
-                    </div>
-                  ) : sessionStatus === 'COMPLETED' ? (
-                    <div style={{ padding: '24px', marginTop: '16px', background: 'var(--success-bg)', borderRadius: '12px', color: 'var(--text-primary)', border: '1px solid var(--success)' }}>
-                      <div style={{ textAlign: 'center', marginBottom: '16px' }}>
-                        <div style={{ fontSize: '2.5rem', marginBottom: '8px' }}>🎉</div>
-                        <div style={{ fontWeight: 'bold', fontSize: '1.4rem', color: 'var(--success)' }}>Payment Successful!</div>
-                        <div style={{ fontSize: '0.9rem', color: 'var(--text-secondary)' }}>Your order has been confirmed.</div>
-                      </div>
-                      
-                      <div style={{ background: 'var(--bg-primary)', padding: '16px', borderRadius: '8px', border: '1px dashed var(--border)', marginBottom: '20px' }}>
-                        <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '8px', fontSize: '0.9rem' }}>
-                          <span style={{ color: 'var(--text-secondary)' }}>Order ID:</span>
-                          <span style={{ fontWeight: 600, fontFamily: 'monospace' }}>{history.find(h => h.id === sessionId)?.id.substring(0, 12).toUpperCase()}</span>
-                        </div>
-                        <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '8px', fontSize: '0.9rem' }}>
-                          <span style={{ color: 'var(--text-secondary)' }}>Amount Paid:</span>
-                          <span style={{ fontWeight: 600, color: 'var(--success)' }}>{formatCurrency(finalPrice)}</span>
-                        </div>
-                        <hr style={{ border: 'none', borderTop: '1px solid var(--border)', margin: '12px 0' }} />
-                        <div style={{ fontSize: '0.85rem', color: 'var(--text-muted)' }}>
-                          A copy of this receipt has been emailed to you (Mock).
-                        </div>
-                      </div>
-
-                      <div style={{ textAlign: 'center' }}>
-                        <button className="btn btn-primary" onClick={() => { setSessionId(null); setSessionStatus('ACTIVE'); setMessages([]); setFinalPrice(null); setView('search'); }}>Back to Shop</button>
-                      </div>
-                    </div>
-                  ) : (
-                    <div style={{ padding: '16px 20px', textAlign: 'center', background: 'var(--bg-secondary)', borderRadius: '8px', marginTop: '16px', color: 'var(--text-muted)', fontSize: '0.88rem' }}>
-                      This session has ended.
-                      <button className="btn btn-primary btn-sm" style={{ marginLeft: '12px' }} onClick={() => { setSessionId(null); setSessionStatus('ACTIVE'); setMessages([]); setView('cart'); }}>Start Fresh</button>
+                    );
+                  })}
+                  {sending && (
+                    <div style={{ padding: '1rem', borderRadius: '12px', maxWidth: '75%', alignSelf: 'flex-start', background: 'rgba(255, 255, 255, 0.85)', border: '1px solid rgba(255,255,255,0.3)', boxShadow: '0 4px 12px rgba(0,0,0,0.05)' }}>
+                      <span className="typing-dot" style={{ background: '#182433' }}></span>
+                      <span className="typing-dot" style={{ animationDelay: '0.2s', background: '#182433' }}></span>
+                      <span className="typing-dot" style={{ animationDelay: '0.4s', background: '#182433' }}></span>
                     </div>
                   )}
+                  <div ref={bottomRef} style={{ height: '1px' }} />
+                </div>
+                
+                {sessionStatus === 'ACTIVE' ? (
+                  <div className="chat-input-row" style={{ marginTop: '16px', background: 'rgba(255, 255, 255, 0.85)', padding: '12px', borderRadius: '12px', display: 'flex', gap: '12px', alignItems: 'flex-end', border: '1px solid rgba(255,255,255,0.3)', boxShadow: '0 4px 12px rgba(0,0,0,0.05)' }}>
+                    <textarea className="tbl-input" placeholder="Make your offer... (Enter to send)" value={input} onChange={e => setInput(e.target.value)} onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(); } }} disabled={sending} style={{ flex: 1, minHeight: '44px', maxHeight: '120px', resize: 'none', padding: '10px 14px', background: 'transparent', border: 'none', outline: 'none', color: '#182433' }} rows={1} />
+                    <button className="tbl-btn tbl-btn-primary" onClick={sendMessage} disabled={sending || !input.trim()} style={{ height: '44px' }}>Send</button>
+                  </div>
+                ) : sessionStatus === 'PENDING_MERCHANT_REVIEW' ? (
+                  <div style={{ padding: '12px 16px', background: '#fff9db', textAlign: 'center', borderRadius: '8px', marginTop: '16px', fontSize: '0.9rem', color: '#f59f00', border: '1px solid #f59f00', alignSelf: 'center', width: '100%', maxWidth: '600px' }}>
+                    Your deal is under merchant review. Please wait...
+                  </div>
+                ) : sessionStatus === 'APPROVED' && finalPrice ? (
+                  <div style={{ padding: '16px 20px', marginTop: '16px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', background: 'rgba(229, 246, 232, 0.95)', border: '1px solid #2fb344', borderRadius: '12px', backdropFilter: 'blur(8px)', width: '100%', boxShadow: '0 4px 12px rgba(47, 179, 68, 0.15)' }}>
+                    <div>
+                      <div style={{ fontWeight: '700', color: '#2fb344', fontSize: '1.1rem', marginBottom: '4px' }}>Deal Approved!</div>
+                      <div style={{ fontSize: '0.9rem', color: '#182433' }}>Final price: {formatCurrency(finalPrice)}</div>
+                    </div>
+                    <button className="tbl-btn tbl-btn-primary" onClick={() => { if (!user) return toast.error('Please Sign In'); setShowCheckout(true); }} style={{ background: '#2fb344', borderColor: '#2fb344' }}>Proceed to Pay</button>
+                  </div>
+                ) : sessionStatus === 'COMPLETED' ? (
+                  <div style={{ padding: '16px 20px', marginTop: '16px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', background: 'rgba(229, 246, 232, 0.95)', border: '1px solid #2fb344', borderRadius: '12px', backdropFilter: 'blur(8px)', width: '100%', boxShadow: '0 4px 12px rgba(47, 179, 68, 0.15)' }}>
+                    <div style={{ display: 'flex', gap: '16px', alignItems: 'center' }}>
+                      <div style={{ fontSize: '2rem' }}>🎉</div>
+                      <div>
+                        <div style={{ fontWeight: '700', color: '#2fb344', fontSize: '1.1rem', marginBottom: '4px' }}>Payment Successful!</div>
+                        <div style={{ fontSize: '0.85rem', color: '#182433' }}>Order ID: {history.find(h => h.id === sessionId)?.id.substring(0, 12).toUpperCase()} | Amount: {formatCurrency(finalPrice)}</div>
+                      </div>
+                    </div>
+                    <button className="tbl-btn tbl-btn-secondary tbl-btn-sm" style={{ color: '#2fb344', borderColor: '#2fb344', background: 'transparent' }} onClick={() => { setSessionId(null); setSessionStatus('ACTIVE'); setMessages([]); setView('history'); }}>Close Session</button>
+                  </div>
+                ) : (
+                  <div style={{ padding: '12px 16px', textAlign: 'center', background: 'rgba(255, 255, 255, 0.85)', borderRadius: '8px', marginTop: '16px', color: '#182433', fontSize: '0.88rem', border: '1px solid rgba(0,0,0,0.1)', alignSelf: 'center', width: '100%' }}>
+                    This session has ended.
+                    <button className="tbl-btn tbl-btn-primary tbl-btn-sm" style={{ marginLeft: '12px' }} onClick={() => { setSessionId(null); setSessionStatus('ACTIVE'); setMessages([]); setView('history'); }}>Go to History</button>
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* New vs Update Modal */}
+        {showSessionModal && (
+          <div style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, background: 'rgba(24, 36, 51, 0.25)', backdropFilter: 'blur(4px)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 200 }}>
+            <div className="tbl-card" style={{ width: '100%', maxWidth: '440px', padding: 0, overflow: 'hidden', background: '#ffffff' }}>
+              <div style={{ padding: '24px', background: 'rgba(255, 255, 255, 0.05)', borderBottom: '1px solid rgba(255,255,255,0.1)' }}>
+                <h3 className="tbl-card-title" style={{ fontSize: '1.2rem', fontWeight: '700', marginBottom: 0, color: '#616161' }}>Active Negotiation Found</h3>
+                <p style={{ fontSize: '0.85rem', color: '#616161', marginTop: '4px', opacity: 0.8 }}>What would you like to do?</p>
+              </div>
+              <div className="tbl-card-body" style={{ padding: '24px' }}>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+                  <button className="tbl-btn tbl-btn-primary" onClick={updateActiveNegotiation} disabled={sending} style={{ display: 'block', height: 'auto', padding: '14px 20px', textAlign: 'left', borderRadius: '8px' }}>
+                    <div>Update Existing Negotiation</div>
+                    <div style={{ fontSize: '0.75rem', opacity: 0.8, marginTop: '4px', fontWeight: 400 }}>Continue with new cart, rounds reset, last price honored</div>
+                  </button>
+                  <button className="tbl-btn tbl-btn-secondary" onClick={() => startNegotiation(true)} disabled={sending} style={{ display: 'block', height: 'auto', padding: '14px 20px', textAlign: 'left', borderRadius: '8px', background: 'rgba(255,255,255,0.2)', border: '1px solid rgba(255,255,255,0.4)', color: '#616161' }}>
+                    <div>Start Fresh Negotiation</div>
+                    <div style={{ fontSize: '0.75rem', opacity: 0.8, marginTop: '4px', fontWeight: 400 }}>Abandon current deal and begin from scratch</div>
+                  </button>
+                  <button className="tbl-btn" onClick={() => setShowSessionModal(false)} style={{ background: 'transparent', color: '#616161', border: '1px solid rgba(255,255,255,0.2)', padding: '10px 20px', borderRadius: '100px', alignSelf: 'flex-end', marginTop: '8px' }}>Cancel</button>
                 </div>
               </div>
-            )}
+            </div>
           </div>
-        </div>
+        )}
+
+        {/* Abandon Modal */}
+        {showAbandonModal && (
+          <div style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, background: 'rgba(24, 36, 51, 0.25)', backdropFilter: 'blur(4px)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 200 }}>
+            <div className="tbl-card" style={{ width: '100%', maxWidth: '400px', padding: 0, overflow: 'hidden', background: '#ffffff' }}>
+              <div style={{ padding: '24px', background: 'rgba(255, 255, 255, 0.05)', borderBottom: '1px solid rgba(255,255,255,0.1)' }}>
+                <h3 className="tbl-card-title" style={{ fontSize: '1.25rem', fontWeight: '700', marginBottom: 0, color: '#616161' }}>Abandon Negotiation?</h3>
+              </div>
+              <div className="tbl-card-body" style={{ padding: '24px' }}>
+                <p style={{ fontSize: '0.95rem', color: '#616161', marginBottom: '24px', lineHeight: 1.5 }}>
+                  Are you sure you want to abandon this deal? Your held stock will be released immediately and the negotiation progress will be lost.
+                </p>
+                <div style={{ display: 'flex', gap: '12px', justifyContent: 'flex-end' }}>
+                  <button className="tbl-btn" onClick={() => setShowAbandonModal(false)} style={{ background: 'transparent', color: '#616161', border: '1px solid rgba(255,255,255,0.2)', padding: '8px 16px', borderRadius: '100px' }}>Cancel</button>
+                  <button className="tbl-btn tbl-btn-danger" onClick={() => { setShowAbandonModal(false); abandonSession(); }} style={{ padding: '8px 16px', borderRadius: '100px', background: '#d63939', borderColor: '#d63939' }}>Abandon Deal</button>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Checkout Modal */}
+        {showCheckout && (
+          <div style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, background: 'rgba(24, 36, 51, 0.25)', backdropFilter: 'blur(4px)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 100 }}>
+            <div className="tbl-card" style={{ width: '100%', maxWidth: '450px', padding: 0, overflow: 'hidden', background: '#ffffff' }}>
+              <div style={{ padding: '24px', background: 'rgba(255, 255, 255, 0.05)', borderBottom: '1px solid rgba(255,255,255,0.1)' }}>
+                <h3 className="tbl-card-title" style={{ fontSize: '1.4rem', fontWeight: '700', marginBottom: 0, color: '#616161', fontFamily: 'Inter, sans-serif' }}>Shipping Details</h3>
+                <p style={{ fontSize: '0.85rem', color: '#616161', marginTop: '4px', opacity: 0.8 }}>Where should we send your items?</p>
+              </div>
+              <div className="tbl-card-body" style={{ padding: '24px' }}>
+                <div style={{ marginBottom: '16px' }}>
+                  <label style={{ display: 'block', fontSize: '0.85rem', fontWeight: 600, marginBottom: '6px', color: '#616161', textTransform: 'uppercase', letterSpacing: '0.5px' }}>Full Name</label>
+                  <input className="glass-search-input" value={user?.fullName || ''} disabled style={{ width: '100%', borderRadius: '8px', padding: '12px 16px', fontSize: '0.95rem', opacity: 0.7 }} />
+                </div>
+                <div style={{ marginBottom: '16px' }}>
+                  <label style={{ display: 'block', fontSize: '0.85rem', fontWeight: 600, marginBottom: '6px', color: '#616161', textTransform: 'uppercase', letterSpacing: '0.5px' }}>Email</label>
+                  <input className="glass-search-input" value={user?.primaryEmailAddress?.emailAddress || ''} disabled style={{ width: '100%', borderRadius: '8px', padding: '12px 16px', fontSize: '0.95rem', opacity: 0.7 }} />
+                </div>
+                <div style={{ marginBottom: '16px' }}>
+                  <label style={{ display: 'block', fontSize: '0.85rem', fontWeight: 600, marginBottom: '6px', color: '#616161', textTransform: 'uppercase', letterSpacing: '0.5px' }}>Phone Number *</label>
+                  <input className="glass-search-input" placeholder="Enter mobile number" value={phone} onChange={e => setPhone(e.target.value)} style={{ width: '100%', borderRadius: '8px', padding: '12px 16px', fontSize: '0.95rem' }} />
+                </div>
+                <div style={{ marginBottom: '32px' }}>
+                  <label style={{ display: 'block', fontSize: '0.85rem', fontWeight: 600, marginBottom: '6px', color: '#616161', textTransform: 'uppercase', letterSpacing: '0.5px' }}>Shipping Address *</label>
+                  <textarea className="glass-search-input" placeholder="Full delivery address (Building, Street, City, ZIP)" value={address} onChange={e => setAddress(e.target.value)} style={{ width: '100%', minHeight: '100px', resize: 'vertical', borderRadius: '8px', padding: '12px 16px', fontSize: '0.95rem', fontFamily: 'inherit' }} />
+                </div>
+                <div style={{ display: 'flex', gap: '16px', justifyContent: 'flex-end' }}>
+                  <button className="tbl-btn" onClick={() => setShowCheckout(false)} style={{ background: 'transparent', color: '#616161', border: '1px solid rgba(255,255,255,0.2)', padding: '10px 20px', borderRadius: '100px' }}>Cancel</button>
+                  <button className="tbl-btn tbl-btn-primary" onClick={submitCheckout} style={{ padding: '10px 24px', borderRadius: '100px', fontWeight: 600 }}>Proceed to Pay</button>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
       </div>
-
-      {/* New vs Update Modal */}
-      {showSessionModal && (
-        <div style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, background: 'rgba(0,0,0,0.75)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 200 }}>
-          <div className="card" style={{ width: '100%', maxWidth: '440px', padding: '28px' }}>
-            <h2 style={{ fontSize: '1.2rem', fontWeight: '700', marginBottom: '8px' }}>You Have an Active Negotiation</h2>
-            <p style={{ fontSize: '0.9rem', color: 'var(--text-secondary)', marginBottom: '24px' }}>What would you like to do?</p>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
-              <button className="btn btn-primary btn-lg" onClick={updateActiveNegotiation} disabled={sending} style={{ display: 'block', height: 'auto', padding: '14px 20px', textAlign: 'left' }}>
-                <div>Update Existing Negotiation</div>
-                <div style={{ fontSize: '0.75rem', opacity: 0.8, marginTop: '4px', fontWeight: 400 }}>Continue with new cart, rounds reset, last price honored</div>
-              </button>
-              <button className="btn btn-secondary btn-lg" onClick={() => startNegotiation(true)} disabled={sending} style={{ display: 'block', height: 'auto', padding: '14px 20px', textAlign: 'left' }}>
-                <div>Start Fresh Negotiation</div>
-                <div style={{ fontSize: '0.75rem', opacity: 0.8, marginTop: '4px', fontWeight: 400 }}>Abandon current deal and begin from scratch</div>
-              </button>
-              <button className="btn btn-secondary btn-sm" onClick={() => setShowSessionModal(false)}>Cancel</button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Abandon Modal */}
-      {showAbandonModal && (
-        <div style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, background: 'rgba(0,0,0,0.75)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 200 }}>
-          <div className="card" style={{ width: '100%', maxWidth: '400px', padding: '24px' }}>
-            <h2 style={{ fontSize: '1.25rem', fontWeight: '700', marginBottom: '16px' }}>Abandon Negotiation?</h2>
-            <p style={{ fontSize: '0.9rem', color: 'var(--text-secondary)', marginBottom: '24px', lineHeight: 1.5 }}>
-              Are you sure you want to abandon this deal? Your held stock will be released immediately and the negotiation progress will be lost.
-            </p>
-            <div style={{ display: 'flex', gap: '12px', justifyContent: 'flex-end' }}>
-              <button className="btn btn-secondary" onClick={() => setShowAbandonModal(false)}>Cancel</button>
-              <button className="btn btn-danger" onClick={() => { setShowAbandonModal(false); abandonSession(); }}>Abandon Deal</button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Checkout Modal */}
-      {showCheckout && (
-        <div style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, background: 'rgba(0,0,0,0.7)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 100 }}>
-          <div className="card" style={{ width: '100%', maxWidth: '400px', padding: '24px' }}>
-            <h2 style={{ fontSize: '1.25rem', fontWeight: '700', marginBottom: '16px' }}>Checkout Details</h2>
-            <div style={{ marginBottom: '12px' }}>
-              <label style={{ display: 'block', fontSize: '0.85rem', marginBottom: '4px', color: 'var(--text-secondary)' }}>Full Name</label>
-              <input className="input" value={user?.fullName || ''} disabled style={{ background: 'var(--bg-secondary)', width: '100%' }} />
-            </div>
-            <div style={{ marginBottom: '12px' }}>
-              <label style={{ display: 'block', fontSize: '0.85rem', marginBottom: '4px', color: 'var(--text-secondary)' }}>Email</label>
-              <input className="input" value={user?.primaryEmailAddress?.emailAddress || ''} disabled style={{ background: 'var(--bg-secondary)', width: '100%' }} />
-            </div>
-            <div style={{ marginBottom: '12px' }}>
-              <label style={{ display: 'block', fontSize: '0.85rem', marginBottom: '4px', color: 'var(--text-secondary)' }}>Phone Number *</label>
-              <input className="input" placeholder="Enter mobile number" value={phone} onChange={e => setPhone(e.target.value)} style={{ width: '100%' }} />
-            </div>
-            <div style={{ marginBottom: '24px' }}>
-              <label style={{ display: 'block', fontSize: '0.85rem', marginBottom: '4px', color: 'var(--text-secondary)' }}>Shipping Address *</label>
-              <textarea className="input" placeholder="Full delivery address" value={address} onChange={e => setAddress(e.target.value)} style={{ width: '100%', minHeight: '80px', resize: 'vertical' }} />
-            </div>
-            <div style={{ display: 'flex', gap: '12px', justifyContent: 'flex-end' }}>
-              <button className="btn btn-secondary" onClick={() => setShowCheckout(false)}>Cancel</button>
-              <button className="btn btn-primary" onClick={submitCheckout}>Proceed to Pay</button>
-            </div>
-          </div>
-        </div>
-      )}
-    </div>
+    </>
   );
 }
