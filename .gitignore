@@ -1,0 +1,21 @@
+# dependencies
+node_modules/
+npm-debug.log*
+
+# environment variables
+.env
+.env.*
+!.env.example
+
+# Next.js
+.next/
+out/
+build/
+
+# Backend TS compilation
+dist/
+*.tsbuildinfo
+
+# Misc
+.DS_Store
+.vscode/
