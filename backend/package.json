@@ -2,10 +2,12 @@
   "name": "backend",
   "version": "1.0.0",
   "main": "index.js",
+  "type": "module",
   "directories": {
     "test": "tests"
   },
   "scripts": {
+    "start": "npx tsx src/server.ts",
     "dev": "npx tsx src/server.ts",
     "seed": "npx tsx scripts/seed-catalog.ts",
     "migrate": "npx tsx scripts/migrate.ts",

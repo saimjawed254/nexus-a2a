@@ -354,11 +354,11 @@ ${message}
         response = await geminiPro.generateContent(systemPrompt + '\n\nChat History:\n' + historyText);
         break;
       } catch (err: any) {
-        if (attempt === 3 || (!err.message?.includes('503') && !err.message?.includes('529'))) {
+        if (attempt === 3 || (!err.message?.includes('503') && !err.message?.includes('529') && !err.message?.includes('429'))) {
           throw err;
         }
         // Handle rate limiting / high demand with backoff
-        await new Promise(r => setTimeout(r, 2000));
+        await new Promise(r => setTimeout(r, 2000 * attempt)); // Exponential backoff
       }
     }
     const aiText = response.response.text();
