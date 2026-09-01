@@ -228,7 +228,13 @@ export default function Dashboard() {
   const getPct = (data: any[]) => {
       if (data.length < 2) return { diff: 0, pct: "0.0", isUp: true };
       const current = data[data.length - 1].value;
-      const previous = data[0].value || 1;
+      const previous = data[0].value;
+      
+      if (previous === 0) {
+          if (current === 0) return { diff: 0, pct: "0.0", isUp: true };
+          return { diff: current, pct: "100.0", isUp: true };
+      }
+      
       const pct = ((current - previous) / previous) * 100;
       return { diff: current - previous, pct: Math.abs(pct).toFixed(1), isUp: pct >= 0 };
   };
