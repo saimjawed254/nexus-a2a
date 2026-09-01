@@ -19,12 +19,25 @@ export class InventoryManager {
         `, [item.product_id, item.quantity]);
         
         if (res.rows.length === 0) {
-          const nameRes = await client.query('SELECT name FROM products WHERE id = $1', [item.product_id]);
-          const pName = nameRes.rows.length > 0 ? nameRes.rows[0].name : item.product_id;
-          throw new Error(JSON.stringify({ 
-            message: `Insufficient stock for: ${pName}`, 
-            product_id: item.product_id 
-          }));
+          const detailRes = await client.query('SELECT name, stock, allocated_stock FROM products WHERE id = $1', [item.product_id]);
+          if (detailRes.rows.length === 0) {
+            throw new Error(JSON.stringify({ message: `Product not found: ${item.product_id}`, product_id: item.product_id }));
+          }
+          const { name: pName, stock, allocated_stock } = detailRes.rows[0];
+          
+          if (stock >= item.quantity) {
+             throw new Error(JSON.stringify({ 
+               message: `Item reserved: ${pName}`, 
+               product_id: item.product_id,
+               is_reserved: true
+             }));
+          } else {
+             throw new Error(JSON.stringify({ 
+               message: `Insufficient stock for: ${pName}`, 
+               product_id: item.product_id,
+               is_reserved: false
+             }));
+          }
         }
       }
       return true;
@@ -53,12 +66,25 @@ export class InventoryManager {
         `, [item.quantity, item.product_id]);
         
         if (res.rowCount === 0) {
-          const nameRes = await client.query('SELECT name FROM products WHERE id = $1', [item.product_id]);
-          const pName = nameRes.rows.length > 0 ? nameRes.rows[0].name : item.product_id;
-          throw new Error(JSON.stringify({ 
-            message: `Insufficient stock for: ${pName}`, 
-            product_id: item.product_id 
-          }));
+          const detailRes = await client.query('SELECT name, stock, allocated_stock FROM products WHERE id = $1', [item.product_id]);
+          if (detailRes.rows.length === 0) {
+            throw new Error(JSON.stringify({ message: `Product not found: ${item.product_id}`, product_id: item.product_id }));
+          }
+          const { name: pName, stock, allocated_stock } = detailRes.rows[0];
+          
+          if (stock >= item.quantity) {
+             throw new Error(JSON.stringify({ 
+               message: `Item reserved: ${pName}`, 
+               product_id: item.product_id,
+               is_reserved: true
+             }));
+          } else {
+             throw new Error(JSON.stringify({ 
+               message: `Insufficient stock for: ${pName}`, 
+               product_id: item.product_id,
+               is_reserved: false
+             }));
+          }
         }
         // NOTE: cart_items are inserted by the caller (negotiation route), NOT here.
       }

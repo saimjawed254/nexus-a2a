@@ -108,8 +108,18 @@ negotiationRouter.post('/start', async (req: Request, res: Response) => {
       await SessionManager.terminateSession(sessionId, 'INSUFFICIENT_STOCK');
       let errorMsg = e.message;
       let outOfStockId = null;
-      try { const parsed = JSON.parse(e.message); errorMsg = parsed.message; outOfStockId = parsed.product_id; } catch (_) {}
-      return res.status(400).json({ error: errorMsg, out_of_stock_product_id: outOfStockId });
+      let isReserved = false;
+      try { 
+        const parsed = JSON.parse(e.message); 
+        errorMsg = parsed.message; 
+        outOfStockId = parsed.product_id; 
+        isReserved = parsed.is_reserved;
+      } catch (_) {}
+      
+      if (isReserved) {
+        errorMsg = `We're sorry! Another customer has just reserved the last remaining units of this item and is currently in checkout. We have paused this negotiation. If they do not complete their payment soon, the stock will be released. Please try again in a few minutes.`;
+      }
+      return res.status(400).json({ error: errorMsg, out_of_stock_product_id: outOfStockId, is_reserved: isReserved });
     }
 
     // Generate an AI-powered welcome message based on the cart items and their rules
@@ -225,8 +235,18 @@ negotiationRouter.post('/session/:sessionId/cart', async (req: Request, res: Res
       await SessionManager.terminateSession(sessionId, 'INSUFFICIENT_STOCK');
       let errorMsg = e.message;
       let outOfStockId = null;
-      try { const parsed = JSON.parse(e.message); errorMsg = parsed.message; outOfStockId = parsed.product_id; } catch (_) {}
-      return res.status(400).json({ error: errorMsg, out_of_stock_product_id: outOfStockId });
+      let isReserved = false;
+      try { 
+        const parsed = JSON.parse(e.message); 
+        errorMsg = parsed.message; 
+        outOfStockId = parsed.product_id; 
+        isReserved = parsed.is_reserved;
+      } catch (_) {}
+      
+      if (isReserved) {
+        errorMsg = `We're sorry! Another customer has just reserved the last remaining units of this item and is currently in checkout. We have paused this negotiation. If they do not complete their payment soon, the stock will be released. Please try again in a few minutes.`;
+      }
+      return res.status(400).json({ error: errorMsg, out_of_stock_product_id: outOfStockId, is_reserved: isReserved });
     }
 
     // Reset rounds but keep history
@@ -406,9 +426,20 @@ ${message}
           dealClosed = false;
           finalOffer = null;
           let pName = 'an item';
-          try { pName = JSON.parse(e.message).message.split(': ')[1]; } catch (_) {}
-          replyMessage += `\n\n**System Notice:** Unfortunately, ${pName} just went out of stock while we were negotiating. We cannot finalize this deal right now.`;
-          systemDecision = "OUT_OF_STOCK_DURING_CHAT";
+          let isReserved = false;
+          try { 
+            const parsed = JSON.parse(e.message);
+            pName = parsed.message.split(': ')[1] || pName; 
+            isReserved = parsed.is_reserved;
+          } catch (_) {}
+          
+          if (isReserved) {
+            replyMessage += `\n\n**System Notice:** Another customer has just reserved the last remaining units of ${pName} and is currently in checkout. We have paused this negotiation. If they do not complete their payment soon, the stock will be released and we can resume.`;
+            systemDecision = "RESERVED_DURING_CHAT";
+          } else {
+            replyMessage += `\n\n**System Notice:** Unfortunately, ${pName} just went out of stock while we were negotiating. We cannot finalize this deal right now.`;
+            systemDecision = "OUT_OF_STOCK_DURING_CHAT";
+          }
         }
       }
     }
@@ -436,8 +467,9 @@ ${message}
     // Determine final status string to return
     let finalStatus = 'ACTIVE';
     if (dealClosed) {
-      if (systemDecision === "OUT_OF_STOCK_DURING_CHAT") finalStatus = 'ACTIVE'; // They can still chat if they remove the item
-      else {
+      if (systemDecision === "OUT_OF_STOCK_DURING_CHAT" || systemDecision === "RESERVED_DURING_CHAT") {
+        finalStatus = 'ACTIVE'; // They can still chat if they remove the item or wait
+      } else {
         const sRes = await pool.query('SELECT status FROM sessions WHERE id = $1', [sessionId]);
         finalStatus = sRes.rows[0].status;
       }

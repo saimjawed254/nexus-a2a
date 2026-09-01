@@ -1,8 +1,8 @@
-# Nexus A2A — AI-Powered Negotiation Engine
+# Nexus A2A
 
 > **Hackathon submission** · Razorpay Track — Build the Future of AI Commerce
 
-Nexus is a real-time, cart-level AI negotiation engine that enables both human buyers and autonomous AI agents to haggle, negotiate, and close deals through a deterministic, guardrailed pricing system — with Razorpay at the payment layer.
+Nexus is a real-time negotiation engine. It lets both human buyers and autonomous AI agents haggle and close deals using a deterministic, guardrailed pricing system built around Razorpay.
 
 ---
 
@@ -24,9 +24,9 @@ Nexus is a real-time, cart-level AI negotiation engine that enables both human b
 
 ## What is Nexus?
 
-Traditional e-commerce has fixed, static prices. Nexus changes that.
+E-commerce usually has fixed prices. Nexus changes that.
 
-Nexus allows **any buyer** — whether a human clicking through a UI, or a fully autonomous AI agent running in a server — to negotiate pricing directly with a Merchant AI. Every negotiation is mathematically bounded so the merchant never takes a loss.
+It allows **any buyer** — whether a human using the browser or a fully autonomous AI agent running in a background script — to negotiate pricing directly with a Merchant AI. We bound every negotiation mathematically, so the merchant never takes a loss.
 
 **Three checkout modes, one engine:**
 
@@ -34,7 +34,7 @@ Nexus allows **any buyer** — whether a human clicking through a UI, or a fully
 |---|---|---|
 | **Human B2C** | Human via browser chat UI | Razorpay standard checkout widget |
 | **Delegated A2A** | AI agent negotiates, human pays | Agent notifies human → human completes Razorpay checkout |
-| **Autonomous A2A** | AI agent end-to-end | Agent calls checkout + verify-payment APIs programmatically |
+| **Autonomous A2A** | AI agent end-to-end | Agent calls checkout + verify-payment APIs programmatically using a B2B payment rail |
 
 ---
 
@@ -69,13 +69,13 @@ Nexus allows **any buyer** — whether a human clicking through a UI, or a fully
 
 ## How the Negotiation Engine Works
 
-This is the most important part to understand. The negotiation is **not just an LLM with a prompt**. It is a layered system with mathematical guardrails that make it safe for production merchants.
+This is the most important part to understand. The negotiation isn't just a basic LLM wrapper. It's a layered system with hard mathematical guardrails.
 
 ### Layer 1: Per-Product Pricing Rules (at catalog upload time)
 
-When a merchant uploads their product catalog (CSV), the `auto-vectorizer` service processes each product:
+When a merchant uploads their product catalog via CSV, the `auto-vectorizer` service processes each product:
 
-1. **Rule Compiler:** If a product has `unstructured_rules` (e.g., *"10% off for orders of 5+, 15% off for 10+"*), Gemini Pro parses this freetext into a structured JSON schema:
+1. **Rule Compiler:** If a product has `unstructured_rules` (like *"10% off for orders of 5+, 15% off for 10+"*), Gemini Pro parses this text into a structured JSON schema:
    ```json
    {
      "volume_tiers": [
@@ -85,31 +85,31 @@ When a merchant uploads their product catalog (CSV), the `auto-vectorizer` servi
      "max_discount_pct": 5
    }
    ```
-2. **Rich Embedding:** A descriptive text document (brand, model, category, price, specs, description) is generated and embedded via Gemini's embedding model. This vector is stored in pgvector for semantic search.
+2. **Rich Embedding:** We generate a descriptive text document (brand, model, category, price, specs, description) and embed it via Gemini's embedding model. This vector is stored in pgvector for semantic search.
 
 ### Layer 2: Constraint Solver (per negotiation round)
 
 Every time a customer sends a chat message, **before the LLM is called**, the `calculateCeiling` function deterministically computes:
 
 - `total_value` = sum of (unit_price × quantity) for all cart items
-- `ceiling_amount` = max total discount allowed across all items (per their rules + qty)
+- `ceiling_amount` = max total discount allowed across all items (based on their rules + qty)
 - `min_acceptable_price` = `total_value - ceiling_amount` (the hard floor)
 
-This floor is injected into the LLM system prompt. If the LLM ever returns a price below this floor (hallucination), the engine **overrides it silently** to the exact floor value.
+We inject this floor into the LLM system prompt. If the LLM ever hallucinates a price below this floor, the engine **overrides it silently** to the exact floor value.
 
 ### Layer 3: LLM Persona (Merchant AI)
 
-The LLM acts as a `STRICT`, `BALANCED`, or `FRIENDLY` sales negotiator (configurable). It:
-- Is given the deterministic price floor as a non-negotiable constraint
-- Must provide **line-item markdown price tables** on every offer (mandatory in prompt)
-- Is told not to reveal the floor price on round 1 — it starts with smaller offers
-- Receives the full chat history on every call
+The LLM acts as a `STRICT`, `BALANCED`, or `FRIENDLY` sales negotiator (configured in the admin dashboard). It:
+- Gets the deterministic price floor as a non-negotiable constraint.
+- Is forced to provide **line-item markdown price tables** on every offer.
+- Is instructed not to reveal the floor price on round 1 (it starts with smaller offers).
+- Receives the full chat history on every API call.
 
 ### Layer 4: Round Enforcement
 
 `max_rounds` is a configurable setting (default: 3). When the final round is reached:
-- If `require_manual_approval = false`: the session auto-approves and stock is soft-allocated
-- If `require_manual_approval = true`: status becomes `PENDING_MERCHANT_REVIEW` — a human merchant must approve or reject
+- If `require_manual_approval = false`: the session auto-approves and stock is soft-allocated.
+- If `require_manual_approval = true`: status becomes `PENDING_MERCHANT_REVIEW` — a human merchant must approve or reject via the dashboard.
 
 ---
 
@@ -142,7 +142,7 @@ GET /negotiation/session/:id  ─────▶ Poll every 3s if PENDING_MERCHA
 POST /checkout/create-order ──────▶  Creates Razorpay order at final_price
                             ◀──────  { order_id, amount, currency }
 
-[Agent generates HMAC-SHA256 signature]
+[Agent signs payload via B2B rail]
 
 POST /checkout/verify-payment ────▶  Validates signature, deducts inventory,
                               ◀────  marks session COMPLETED
@@ -194,7 +194,7 @@ Semantic product search. Uses Gemini to extract hard filters (price caps) then r
 }
 ```
 
-> Empty `query` → returns newest in-stock products (paginated catalog browse).
+> **Note:** Empty `query` returns the newest in-stock products (paginated catalog browse). It defaults to 20 products per page. Agents can fetch more by passing `page: 2`, `page: 3`, etc.
 
 ---
 
@@ -202,7 +202,7 @@ Semantic product search. Uses Gemini to extract hard filters (price caps) then r
 
 #### `POST /api/negotiation/start`
 
-Creates a new negotiation session. Validates all product IDs, stores cart items at current prices, runs a stock availability check, generates an AI-personalized opening message from the Merchant AI. Any previous ACTIVE session for this user is automatically superseded (terminated as SUPERSEDED).
+Creates a new negotiation session. Validates all product IDs, stores cart items at current prices, runs a stock availability check, and generates an AI-personalized opening message from the Merchant AI. Any previous ACTIVE session for this user is superseded.
 
 ```json
 // Request
@@ -221,7 +221,7 @@ Creates a new negotiation session. Validates all product IDs, stores cart items 
 }
 ```
 
-> **Important:** Stock is NOT hard-allocated here. It is only checked for availability. Hard allocation happens at approval time to prevent holding stock during long negotiations.
+> **Important:** Stock is NOT hard-allocated here. It is only checked for availability. Hard allocation happens at approval time to prevent griefers from holding stock during long negotiations.
 
 ---
 
@@ -275,16 +275,16 @@ Returns the full session history for a user (all statuses). Used for the "Sessio
 **Header required:** `x-session-id: <session_id>`
 
 The core negotiation endpoint. On each call:
-1. Rate limit check (1 message / 2 seconds)
-2. Fetches cart and runs `calculateCeiling` to get `min_acceptable_price`
-3. Increments `rounds_used`
-4. Calls Gemini Pro with full system prompt (persona, constraints, cart contents, history)
-5. Parses LLM output for embedded JSON price offer
-6. **Overrides** any LLM price below the hard floor
-7. Enforces max_rounds closure
-8. If `require_manual_approval`: sets `PENDING_MERCHANT_REVIEW`
-9. Else auto-approves and soft-allocates stock
-10. Emits live WebSocket events to merchant dashboard
+1. Rate limit check (1 message / 2 seconds).
+2. Fetches cart and runs `calculateCeiling` to get `min_acceptable_price`.
+3. Increments `rounds_used`.
+4. Calls Gemini Pro with full system prompt (persona, constraints, cart contents, history).
+5. Parses LLM output for embedded JSON price offer.
+6. **Overrides** any LLM price below the hard floor.
+7. Enforces max_rounds closure.
+8. If `require_manual_approval`: sets `PENDING_MERCHANT_REVIEW`.
+9. Else auto-approves and soft-allocates stock.
+10. Emits live WebSocket events to merchant dashboard.
 
 ```json
 // Request body
@@ -308,8 +308,6 @@ The core negotiation endpoint. On each call:
   "final_price": 287998.04
 }
 ```
-
-> Rate limit: HTTP 429 if called more than once per 2 seconds per session.
 
 ---
 
@@ -441,11 +439,11 @@ Merchant rejects or counters the deal.
 
 #### `POST /api/admin/terminate/:session_id`
 
-Kill switch. Immediately terminates any active session and releases inventory. Sends an apology message to the customer: *"We sincerely apologize, but the merchant has decided to close this negotiation session. Your cart remains intact if you wish to try again later."*
+Kill switch. Immediately terminates any active session and releases inventory. Sends an apology message to the customer.
 
 #### `GET /api/merchant/products`
 
-Returns all products in the catalog (admin view with full stock details).
+Returns all products in the catalog.
 
 #### `GET /api/merchant/config`
 #### `PUT /api/merchant/config`
@@ -459,17 +457,13 @@ Read and update merchant negotiation settings:
 
 #### `POST /api/merchant/upload-catalog`
 
-Multipart form upload (`catalog` field, CSV file). Processes each product through the auto-vectorizer:
-1. Parses unstructured pricing rules via Gemini
-2. Generates rich text document
-3. Creates Gemini embedding vector
-4. Upserts into `products` table with pgvector embedding
+Multipart form upload (`catalog` field, CSV file). Processes each product through the auto-vectorizer.
 
 ---
 
 ### Merchant Inventory (Internal)
 
-Inventory management uses a two-phase allocation model to prevent overselling without unnecessarily locking stock during negotiations:
+Inventory management uses a transparent two-phase allocation model to prevent overselling without unnecessarily locking stock during negotiations:
 
 | Phase | When | What |
 |---|---|---|
@@ -477,6 +471,8 @@ Inventory management uses a two-phase allocation model to prevent overselling wi
 | **Soft Allocate** | On `APPROVED` (auto or manual) | Increments `allocated_stock`. Reduces `available_stock`. |
 | **Hard Deduct** | `POST /checkout/verify-payment` | Permanently decrements `stock`. Clears `allocated_stock`. |
 | **Release** | On `TERMINATED` / kill switch | Decrements `allocated_stock` back. Frees up for others. |
+
+If a customer tries to buy an item that is currently Soft Allocated to someone else (meaning the other buyer is in checkout), Nexus throws a `RESERVED` error instead of a generic out-of-stock error. The customer is explicitly told: *"Another customer has just reserved the last remaining units... If they do not complete their payment soon, the stock will be released."* This prevents losing a customer if the first buyer abandons their cart.
 
 ---
 
@@ -519,8 +515,8 @@ node demo-a2a.js
 ```bash
 cd backend
 npm install
-cp .env.example .env   # fill in your keys
-npm run dev            # starts on port 4000
+cp .env.example .env
+npm run dev
 ```
 
 ### Frontend
@@ -528,8 +524,8 @@ npm run dev            # starts on port 4000
 ```bash
 cd frontend
 npm install
-cp .env.local.example .env.local   # fill in your keys
-npm run dev                         # starts on port 3000
+cp .env.local.example .env.local
+npm run dev
 ```
 
 ### Database Setup
@@ -551,7 +547,7 @@ CREATE TABLE merchant_config (
   max_discount_pct NUMERIC DEFAULT 3,
   max_rounds INTEGER DEFAULT 3,
   llm_personality TEXT DEFAULT 'STRICT',
-  require_manual_approval BOOLEAN DEFAULT false,
+  require_manual_approval BOOLEAN DEFAULT true,
   session_timeout_minutes INTEGER DEFAULT 15,
   updated_at TIMESTAMPTZ DEFAULT NOW()
 );
@@ -626,6 +622,15 @@ NEXT_PUBLIC_MERCHANT_KEY=nexus_merchant_2026
 
 ## Clarifying Q&A for Judges
 
+**Q: How many products are sent back during the semantic search? Can the agent request more?**  
+A: By default, the `POST /api/discovery/discover` endpoint returns the top 20 matches. Autonomous agents can easily paginate and fetch more items by passing `page: 2`, `page: 3`, etc. in the request payload. 
+
+**Q: What happens if a customer tries to buy an item that someone else is currently checking out?**  
+A: Nexus uses a transparent "soft allocation" state. If someone reaches the checkout stage (APPROVED status), their units are temporarily reserved (`allocated_stock`). If another customer attempts to start a negotiation or chat about those same units, Nexus detects the reservation and sends them a transparent message: *"Another customer has just reserved the last remaining units... If they do not complete their payment soon, the stock will be released."* This ensures we don't permanently lose the second buyer if the first buyer abandons their cart.
+
+**Q: Why is the agent using demo numbers to simulate the Razorpay payment? Can it not make the payment itself?**  
+A: In reality, an autonomous B2B agent does not fill out a credit card form in a browser modal. A true corporate buying agent uses an API-first B2B payment rail (like Stripe Issuing, Brex API, or direct bank wire APIs) to programmatically transfer funds. The `demo-a2a.js` script simulates what the Razorpay server-to-server webhook callback would look like after that programmatic payment succeeds. We generate the HMAC-SHA256 signature to prove that the Nexus backend fundamentally works to cryptographically verify incoming programmatic payments.
+
 **Q: What actually prevents the AI from giving away products for free?**  
 A: The `calculateCeiling` function runs deterministically on every chat round — before the LLM is even called. It computes the hard minimum acceptable price from the product's pricing rules and quantity. This value is injected into the LLM prompt as a non-negotiable constraint. Even if the LLM hallucinates a lower price in its JSON output, the engine detects it and silently overrides it to the computed floor. The LLM has zero ability to bypass this.
 
@@ -633,19 +638,16 @@ A: The `calculateCeiling` function runs deterministically on every chat round �
 A: The floor is in the system prompt, so yes, the LLM knows it. However, the prompt explicitly instructs the LLM not to reveal the exact floor on early rounds and to start with smaller discounts. The real protection is the mathematical override on the backend — even if a customer somehow manipulates the LLM into "agreeing" to a lower price, the backend will reject it and reset to the floor.
 
 **Q: What stops two customers from simultaneously buying the last unit of a product?**  
-A: The two-phase inventory model. Stock is only `checkAvailability` (read-only) at session start. The `softAllocate` (which increments `allocated_stock` in the DB) only happens at approval time, which is a serialized write. The `available_stock` field used in all checks is computed as `stock - allocated_stock`. So two concurrent negotiations can proceed, but only the first one to reach approval will successfully allocate the stock. The second gets an "out of stock while we were chatting" error.
+A: The two-phase inventory model. Stock is only checked for availability (read-only) at session start. The `softAllocate` (which increments `allocated_stock` in the DB) only happens at approval time, which is a serialized write. Only the first negotiation to reach approval will successfully allocate the stock.
 
 **Q: How does an AI agent authenticate without logging in?**  
-A: The `clerk_user_id` (shown as "Agent API Key" in `/docs`) is passed directly in request bodies. The negotiation engine stores this ID against the session record, so all sessions are traceable to a real Clerk user. In a production hardening pass, this would be a signed JWT, but for this demo the Clerk user ID is sufficient — it cannot be guessed as it is an opaque Clerk-generated string.
+A: The `clerk_user_id` (shown as "Agent API Key" in `/docs`) is passed directly in request bodies. The negotiation engine stores this ID against the session record, so all sessions are traceable to a real Clerk user. In a production hardening pass, this would be a signed JWT, but for this demo the Clerk user ID is sufficient.
 
 **Q: What happens if someone sends malicious input in the chat message?**  
-A: The session ID is validated via `sessionGuard` middleware before the message even reaches the LLM. The user message is passed to Gemini as a user input, not interpolated into the system prompt SQL or any query — there is no SQL injection surface. Prompt injection is mitigated by clearly delineating user input with `--- START USER INPUT (SESSION xxx) ---` / `--- END USER INPUT ---` markers in the system prompt, making it much harder for a prompt injection attack to alter the system instructions.
+A: The session ID is validated via `sessionGuard` middleware before the message even reaches the LLM. The user message is passed to Gemini as a user input, not interpolated into the system prompt SQL or any query — there is no SQL injection surface. Prompt injection is mitigated by clearly delineating user input with `--- START USER INPUT ---` markers in the system prompt.
 
 **Q: Can the merchant modify the `max_discount_pct` mid-negotiation to change outcomes?**  
 A: No. The config is fetched fresh on every chat round, so changing it does affect future rounds. However, the cart items' `unit_price` is snapshotted at session creation time. So the total value baseline is fixed. Changing `max_discount_pct` mid-session would only tighten or loosen the ceiling for remaining rounds.
-
-**Q: Why is the demo using a mock Razorpay payment instead of a real one?**  
-A: An autonomous server-side AI agent cannot open a browser and complete a Razorpay payment modal. So in `demo-a2a.js`, the script simulates what Razorpay's payment gateway would do after processing a card: generating the HMAC-SHA256 signature over `order_id|payment_id` using the shared `RAZORPAY_KEY_SECRET`. The verify-payment endpoint does real cryptographic validation of this signature — the demo is not bypassing the security layer, it is demonstrating what the gateway callback would look like programmatically. Human users still go through the real Razorpay modal in the browser.
 
 **Q: What is pgvector and why use it?**  
 A: pgvector is a PostgreSQL extension that adds a native vector column type and cosine/L2 distance operators. By storing Gemini-generated product embeddings directly in Postgres, we can run semantic search queries like `ORDER BY embedding <=> $queryVector` without a separate vector database. This keeps the stack simple while enabling full semantic product discovery.

@@ -65,7 +65,7 @@ merchantRouter.get('/products', async (req, res) => {
 merchantRouter.get('/config', async (req, res) => {
   try {
     const result = await pool.query('SELECT * FROM merchant_config LIMIT 1');
-    if (result.rows.length === 0) return res.json({ max_rounds: 3, max_discount_pct: 3.0, llm_personality: 'STRICT', require_manual_approval: false, session_timeout_minutes: 15 });
+    if (result.rows.length === 0) return res.json({ max_rounds: 3, max_discount_pct: 3.0, llm_personality: 'STRICT', require_manual_approval: true, session_timeout_minutes: 15 });
     res.json(result.rows[0]);
   } catch (error: any) {
     res.status(500).json({ error: 'Failed to fetch config' });
